@@ -1,11 +1,11 @@
 # AGENTS.md — nearpay-billing
 
-You are working in **nearpay-billing**, one of 26 NearPay repositories (`nearpay-brain/architecture/repositories.md`).
+You are working in **nearpay-billing**, one of 27 NearPay repositories (`nearpay-brain/architecture/repositories.md`).
 Scope: Products, prices, manual tax rates, invoices, subscriptions, dunning, and the vault keeper for auto-debit mandates. A client of payments.
 
 ## Before changing anything
 
-1. Read `../nearpay-brain/AGENTS.md`, then the docs listed in this repo's README.
+1. Read `../nearpay-brain/AGENTS.md`, then this repo's LLD (`../nearpay-brain/lld/billing.md`) — it is the implementation spec; do not make design decisions it already makes.
 2. Contracts (requests, responses, events, errors) come from `@nearpay/spec`. If one must change, open a PR in `nearpay-spec` first; never hand-write contract types here.
 3. Check your change against invariants INV-1…INV-9 in `nearpay-brain/product/requirements.md`.
 

@@ -350,7 +350,7 @@ export const MERCHANT: MerchantFacts = {
   displayName: "Acme Corp",
   liveEnabled: true,
   liveMissing: null,
-  destinations: [{ id: "sd_default", assetId: "nep141:usdc.near", chain: "near", type: "intents_account" }],
+  destinations: [{ id: "sd_default", assetId: "nep141:usdc.near", chain: "near:mainnet", type: "intents_account" }],
   defaults: { "*": "sd_default" },
 };
 

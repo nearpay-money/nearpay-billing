@@ -1,23 +1,25 @@
 /**
  * The Postgres adapter under the real use cases (Testcontainers Postgres, provisioned like nearpay-deploy:
- * migrator owns the database, the app role has DML only). Peers are fakes; events are rendered by a stub
- * until the spec 0.3.0 views land. Jobs run against the use cases' fake clock.
+ * migrator owns the database, the app role has DML only). Peers are fakes; events are rendered by the real
+ * views (the kit validates every billing envelope against the spec at emit time). Jobs run against the use
+ * cases' fake clock.
  */
 import { createDb, type Database, migrate, sql } from "@nearpay-internal/db";
 import { provisionServiceDatabase, type Started, startPostgres } from "@nearpay-internal/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { eventRenderer } from "../../src/api/views.js";
 import * as catalog from "../../src/app/catalog.js";
 import type { Ctx } from "../../src/app/commit.js";
 import { createPublicInvoiceSession } from "../../src/app/hosted.js";
 import * as inv from "../../src/app/invoices.js";
 import { onPaymentIntentSucceeded } from "../../src/app/payment-events.js";
-import type { EventObject } from "../../src/app/ports.js";
 import * as subs from "../../src/app/subscriptions.js";
 import type { Invoice } from "../../src/domain/invoice/invoice.js";
 import { DAY, DomainError } from "../../src/domain/shared.js";
 import { MIGRATIONS_DIR } from "../../src/infra/db/migrations.js";
 import type { DB } from "../../src/infra/db/schema.js";
 import { postgresStore } from "../../src/infra/db/store.js";
+import { recurringHandlers } from "../../src/scheduler/recurring.js";
 import { jobHandlers } from "../../src/workers/jobs.js";
 import { OTHER, SCOPE, T0 } from "../support/fixtures.js";
 import { type TestBilling, testBilling } from "../support/memory.js";
@@ -25,10 +27,7 @@ import { type TestBilling, testBilling } from "../support/memory.js";
 let pg: Started;
 let db: Database<DB>;
 const c: Ctx = { scope: SCOPE, actor: "user:usr_1" };
-const render = (o: EventObject) =>
-  o.kind === "subscription"
-    ? { id: o.subscription.id, status: o.subscription.status }
-    : { id: o.invoice.id, status: o.invoice.status };
+const render = eventRenderer("https://api.nearpay.test");
 
 beforeAll(async () => {
   pg = await startPostgres({ database: "postgres" });
@@ -283,6 +282,37 @@ describe("postgres store", () => {
       .orderBy("created_at")
       .execute();
     expect(st.map((x) => x.to_state)).toEqual(["incomplete", "active", "past_due", "canceled"]);
+  });
+
+  it("recurring jobs: the renewal sweep re-enqueues overdue renewals; the purge runs", async () => {
+    const { monthly } = await setup();
+    const sub = await subs.createSubscription(b, c, {
+      customerId: cus("1"),
+      items: [{ priceId: monthly.id }],
+      trialPeriodDays: 1,
+    });
+    // pretend the period ended long ago and its renewal job vanished
+    await db.db
+      .updateTable("subscriptions")
+      .set({
+        current_period_start: new Date(Date.now() - 7_200_000),
+        current_period_end: new Date(Date.now() - 3_600_000),
+      })
+      .where("id", "=", toUuid(sub.id))
+      .execute();
+    await db.db.deleteFrom("jobs").where("kind", "=", "subscription.renew").execute();
+    const h = recurringHandlers(db.db);
+    await h["subscription.sweep"]?.(null);
+    await h["subscription.sweep"]?.(null);
+    const jobs = await db.db
+      .selectFrom("jobs")
+      .select(["dedupe_key"])
+      .where("kind", "=", "subscription.renew")
+      .execute();
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.dedupe_key?.startsWith(`subscription.renew:${sub.id}:`)).toBe(true);
+    expect(jobs[0]?.dedupe_key?.endsWith(":sweep")).toBe(true);
+    await h["kit.purge"]?.(null);
   });
 
   it("rate counters count per fixed window", async () => {

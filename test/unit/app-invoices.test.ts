@@ -223,7 +223,7 @@ describe("invoice use cases", () => {
       payable: true,
       merchantName: "Acme Corp",
       billTo: { email: "payer@example.com" },
-      settlement: { assetId: "nep141:usdc.near", chain: "near" },
+      settlement: { assetId: "nep141:usdc.near", chain: "near:mainnet" },
     });
     expect(b.pay.created).toHaveLength(0); // GET has no side effects
 

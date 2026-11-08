@@ -9,6 +9,7 @@
  * | evt.payments.payment_intent.succeeded | `invoice` set → invoice paid (or late money listed) |
  * | evt.payments.payment_intent.payment_failed | `invoice.payment_failed`; the invoice stays open |
  * | evt.payments.checkout_session.expired | forget the invoice's session (a new one opens lazily) |
+ * | evt.payments.payment_intent.expired | the same, for the intent's checkout session |
  */
 
 import { CheckoutSession, PaymentIntent } from "@nearpay/spec";
@@ -54,6 +55,16 @@ export function billingHandlers(b: Billing): Partial<Record<Subject, EventHandle
       const object = intentFacts(e);
       if (!object.invoiceId) return;
       await onPaymentIntentFailed(b, { eventId: e.id, subject: e.subject, scope: scopeOf(e), object });
+    },
+    "evt.payments.payment_intent.expired": async (e) => {
+      const pi = PaymentIntent.parse(e.data.object);
+      if (!pi.invoice || !pi.checkout_session) return;
+      await onCheckoutSessionExpired(b, {
+        eventId: e.id,
+        subject: e.subject,
+        scope: scopeOf(e),
+        object: { id: pi.checkout_session, invoiceId: pi.invoice },
+      });
     },
     "evt.payments.checkout_session.expired": async (e) => {
       const cs = CheckoutSession.parse(e.data.object);

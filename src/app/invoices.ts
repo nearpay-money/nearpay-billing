@@ -414,7 +414,12 @@ export async function finalizeInvoice(b: Billing, c: Ctx, id: string): Promise<I
   return b.store.transaction(async (tx) => {
     const cur = await tx.invoices.get(c.scope, id, { lock: true });
     if (!cur) throw missing("invoice", id);
-    if (cur.customerId !== before.customerId || cur.settlementDestinationId !== before.settlementDestinationId)
+    if (
+      cur.customerId !== before.customerId ||
+      cur.settlementDestinationId !== before.settlementDestinationId ||
+      cur.currency !== before.currency ||
+      cur.assetId !== before.assetId
+    )
       throw new DomainError("state_conflict", { object: "invoice", state: "changed during finalize" });
     return finalizeInTx(b, tx, cur, { merchant, customer, meta: { actor: c.actor, cause: "finalized" } });
   });

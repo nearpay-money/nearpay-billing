@@ -252,7 +252,8 @@ function txOf(s: MemoryState): BillingTx {
     },
     async enqueue(j) {
       if (!j.dedupeKey.startsWith(`${j.kind}:`)) throw new Error("dedupe key must start with the kind");
-      if (!s.jobs.has(j.dedupeKey)) s.jobs.set(j.dedupeKey, { ...structuredClone(j), done: false });
+      if (!s.jobs.has(j.dedupeKey))
+        s.jobs.set(j.dedupeKey, { ...structuredClone(j), payload: { ...j.payload, at: j.runAt }, done: false });
     },
     async consume(eventId) {
       if (s.inbox.has(eventId)) return false;

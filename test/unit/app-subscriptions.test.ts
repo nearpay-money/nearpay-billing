@@ -148,8 +148,10 @@ describe("subscriptions", () => {
     let all = await invoicesOf(s.id);
     expect(all).toHaveLength(2);
     expect(all[1]).toMatchObject({ billingReason: "subscription_cycle", period: { start: p1End }, status: "open" });
-    // replay the renewal job: nothing new
-    await subs.renewJob(b, { subscription: s.id, scope: SCOPE });
+    // replay the renewal job (its payload carries the old period end): nothing new
+    await subs.renewJob(b, { subscription: s.id, scope: SCOPE, at: p1End });
+    // a renewal call that is not due and carries no schedule is retried by the job runner, never dropped
+    await expect(subs.renewJob(b, { subscription: s.id, scope: SCOPE })).rejects.toThrow(/not due/);
     expect(await invoicesOf(s.id)).toHaveLength(2);
     const cur = await subs.getSubscription(b, c, s.id);
     expect(cur).toMatchObject({

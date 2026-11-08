@@ -245,7 +245,11 @@ export function cancelSubscription(b: Billing, c: Ctx, id: string, atPeriodEnd: 
 export interface SubscriptionJob {
   readonly subscription: string;
   readonly scope: Scope;
+  /** When the job was scheduled for (decisions use `max(now, at)`, see `JobRequest`). */
+  readonly at?: number | undefined;
 }
+
+const jobNow = (b: Billing, j: { readonly at?: number | undefined }): number => Math.max(nowS(b), j.at ?? 0);
 
 const SYSTEM = "system:renewal";
 
@@ -253,10 +257,12 @@ const SYSTEM = "system:renewal";
 export async function renewJob(b: Billing, j: SubscriptionJob): Promise<void> {
   const before = await b.store.transaction((tx) => tx.subscriptions.get(j.scope, j.subscription));
   if (!before) return;
-  const first = renew(before, nowS(b));
+  const first = renew(before, jobNow(b, j));
   if (first.kind === "none") return;
   if (first.kind === "wait") {
-    await b.store.transaction((tx) => scheduleRenewal(tx, before, nowS(b)));
+    // not due: the job for `current_period_end` exists (or is this one, running early) — retry later
+    if (j.at !== undefined && j.at < first.at) await b.store.transaction((tx) => scheduleRenewal(tx, before, nowS(b)));
+    else throw new Error(`renewal of ${j.subscription} is not due before ${first.at}`);
     return;
   }
   // peer reads before the transaction (merchant name for the number prefix, customer for bill-to/mail)
@@ -267,7 +273,7 @@ export async function renewJob(b: Billing, j: SubscriptionJob): Promise<void> {
   await b.store.transaction(async (tx) => {
     const cur = await tx.subscriptions.get(j.scope, j.subscription, { lock: true });
     if (!cur) return;
-    const now = nowS(b);
+    const now = jobNow(b, j);
     const d = renew(cur, now);
     const meta = { actor: SYSTEM, cause: `renewal at ${cur.currentPeriodEnd}` };
     if (d.kind === "end") {
@@ -275,7 +281,7 @@ export async function renewJob(b: Billing, j: SubscriptionJob): Promise<void> {
       return;
     }
     if (d.kind === "wait") {
-      await scheduleRenewal(tx, cur, now);
+      await scheduleRenewal(tx, cur, nowS(b));
       return;
     }
     if (d.kind !== "invoice" || !peers) return;

@@ -14,7 +14,11 @@ import type { Billing } from "./ports.js";
 export interface InvoiceJob {
   readonly invoice: string;
   readonly scope: Scope;
+  /** When the job was scheduled for (decisions use `max(now, at)`, see `JobRequest`). */
+  readonly at?: number | undefined;
 }
+
+const jobNow = (b: Billing, j: { readonly at?: number | undefined }): number => Math.max(nowS(b), j.at ?? 0);
 
 const SYSTEM = "system:dunning";
 
@@ -22,7 +26,7 @@ export function remindJob(b: Billing, j: InvoiceJob & { readonly number: number 
   return b.store.transaction(async (tx) => {
     const inv = await tx.invoices.get(j.scope, j.invoice, { lock: true });
     if (!inv) return;
-    const due = reminderToSend(inv, j.number, nowS(b));
+    const due = reminderToSend(inv, j.number, jobNow(b, j));
     if (!due) return;
     await saveInvoice(
       tx,
@@ -39,7 +43,7 @@ export function overdueJob(b: Billing, j: InvoiceJob): Promise<void> {
   return b.store.transaction(async (tx) => {
     const inv = await tx.invoices.get(j.scope, j.invoice, { lock: true });
     if (!inv) return;
-    const now = nowS(b);
+    const now = jobNow(b, j);
     const next = markOverdue(inv, now);
     if (!next) return;
     const saved = await saveInvoice(tx, inv, next, { actor: SYSTEM, cause: "overdue" }, [
@@ -60,7 +64,7 @@ export function exhaustJob(b: Billing, j: InvoiceJob): Promise<void> {
     const inv = await tx.invoices.get(j.scope, j.invoice, { lock: true });
     if (!inv?.subscriptionId) return;
     const sub = await tx.subscriptions.get(j.scope, inv.subscriptionId, { lock: true });
-    const now = nowS(b);
+    const now = jobNow(b, j);
     const out = exhaust(inv, now, sub ? { status: sub.status, onExhausted: sub.dunning.onExhausted } : null);
     if (!out) return;
     const saved = await saveInvoice(tx, inv, out.invoice, { actor: SYSTEM, cause: "dunning exhausted" }, [

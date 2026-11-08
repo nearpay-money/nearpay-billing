@@ -451,6 +451,23 @@ describe("invoice use cases", () => {
     expect(await code(invoiceNotificationContext(b, "in_x"))).toBe("resource_missing");
   });
 
+  it("time-based jobs act at their scheduled time even if the service clock lags (skew)", async () => {
+    const o = await openInvoice();
+    const first = o.dueDate as number;
+    // the database runs the reminder job a second before the service clock reaches it
+    b.clock.ms = (first - 3 * 86_400 - 1) * 1000;
+    await jobHandlers(b)["invoice.remind"]({
+      invoice: o.id,
+      account_id: SCOPE.accountId,
+      livemode: false,
+      number: 1,
+      at: first - 3 * 86_400,
+    });
+    expect((await inv.getInvoice(b, c, o.id)).remindersSent).toBe(1);
+    await jobHandlers(b)["invoice.overdue"]({ invoice: o.id, account_id: SCOPE.accountId, livemode: false, at: first });
+    expect((await inv.getInvoice(b, c, o.id)).overdueAt).toBe(first);
+  });
+
   it("PDFs: drafts refused, rendered with a status stamp, served to the secret holder", async () => {
     const d = await inv.createInvoice(b, c, { customerId: "cus_1", lines: [{ priceId }] });
     expect(await code(getInvoicePdf(b, c, d.id))).toBe("state_conflict");

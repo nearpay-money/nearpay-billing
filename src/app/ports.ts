@@ -153,6 +153,11 @@ export type JobKind =
   | "subscription.renew"
   | "subscription.renewal_upcoming";
 
+/**
+ * A durable job. Adapters store `runAt` in the payload as `at`: handlers decide at `max(now, at)`, so a job
+ * the database runs a moment before the service clock reaches `runAt` (clock skew) still acts instead of
+ * being skipped for ever.
+ */
 export interface JobRequest {
   readonly kind: JobKind;
   /** Must start with `<kind>:`; an existing job with the key wins. */

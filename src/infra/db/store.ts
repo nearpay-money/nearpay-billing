@@ -815,7 +815,12 @@ function txAdapter(tx: Tx, render: EventRenderer): BillingTx {
       });
     },
     async enqueue(j) {
-      await enqueueJob(tx, { kind: j.kind, payload: j.payload, runAt: ts(j.runAt), dedupeKey: j.dedupeKey });
+      await enqueueJob(tx, {
+        kind: j.kind,
+        payload: { ...j.payload, at: j.runAt },
+        runAt: ts(j.runAt),
+        dedupeKey: j.dedupeKey,
+      });
     },
     consume: (eventId, subject) => consume(tx, eventId, subject),
     async hit(key, windowSeconds, now) {

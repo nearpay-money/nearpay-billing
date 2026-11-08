@@ -260,7 +260,7 @@ describe("postgres store", () => {
     expect((await subs.getSubscription(b, c, s.id)).status).toBe("active");
     b.clock.ms = s.currentPeriodEnd * 1000;
     await runJobs();
-    await subs.renewJob(b, { subscription: s.id, scope: SCOPE });
+    await subs.renewJob(b, { subscription: s.id, scope: SCOPE, at: s.currentPeriodEnd });
     const all = await list();
     expect(all).toHaveLength(2);
     const renewal = all[1] as Invoice;

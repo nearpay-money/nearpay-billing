@@ -8,6 +8,7 @@ import { exhaustJob, overdueJob, remindJob } from "../app/dunning.js";
 import { renderInvoicePdfJob } from "../app/pdf.js";
 import type { Billing, JobKind } from "../app/ports.js";
 import { renewalUpcomingJob, renewJob } from "../app/subscriptions.js";
+import { collectJob } from "../keeper/collect.js";
 
 const scoped = { account_id: z.uuid(), livemode: z.boolean(), at: z.int().optional() };
 const InvoicePayload = z.object({ invoice: z.string().startsWith("in_"), ...scoped });
@@ -16,6 +17,12 @@ const SubscriptionPayload = z.object({
   subscription: z.string().startsWith("sub_"),
   ...scoped,
   period_end: z.int().optional(),
+});
+
+const MandatePayload = z.object({
+  mandate: z.string().startsWith("md_"),
+  invoice: z.string().startsWith("in_"),
+  ...scoped,
 });
 
 const scopeOf = (p: { account_id: string; livemode: boolean }) => ({ accountId: p.account_id, livemode: p.livemode });
@@ -43,6 +50,10 @@ export function jobHandlers(b: Billing): JobHandlers {
     "subscription.renew": (raw) => {
       const p = SubscriptionPayload.parse(raw);
       return renewJob(b, { subscription: p.subscription, scope: scopeOf(p), at: p.at });
+    },
+    "mandate.collect": (raw) => {
+      const p = MandatePayload.parse(raw);
+      return collectJob(b, { mandate: p.mandate, invoice: p.invoice, scope: scopeOf(p) });
     },
     "subscription.renewal_upcoming": (raw) => {
       const p = SubscriptionPayload.parse(raw);

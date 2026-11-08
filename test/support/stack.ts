@@ -256,6 +256,15 @@ export async function startStack(o: StackOptions = {}): Promise<Stack> {
     publicSessionsPerClient: 1000,
     publicSessionsPerInvoice: 1000,
     natsUrl: nats?.url ?? "nats://127.0.0.1:9",
+    // Stage 4 (no keeper key: the live keeper is off; test mode uses the stand-in when configured)
+    vaultContract: "v1.vault.nearpay.near",
+    nearRpcUrls: ["http://127.0.0.1:9/near-rpc"],
+    testVaultContract: "vault.sandbox.near",
+    testKeeperAccount: "keeper.sandbox.near",
+    vaultUsdTokens: ["17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1", "usdt.tether-token.near"],
+    vaultTokens: ["17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1", "usdt.tether-token.near"],
+    vaultMaxFeeBps: 500,
+    simulatedPayer: "sandbox-payer.near",
   } as WorkerConfig;
   const deps = { keys: testKeySource(), serviceToken: testServiceToken("billing") };
   const { service: api, billing } = createApi(config, {

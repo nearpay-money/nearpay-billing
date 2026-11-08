@@ -3,11 +3,15 @@
  * embeds the invoice secret) are served here only — never put on the bus. Internal routes, service scope
  * `billing.read`; they act in the row's own scope.
  */
-import { amountRemaining, type Invoice } from "../domain/invoice/invoice.js";
+import { amountRemaining, type Invoice, isPayable } from "../domain/invoice/invoice.js";
 import { priceLines } from "../domain/invoice/lines.js";
+import type { NearTx } from "../domain/mandate/funding.js";
+import type { Mandate } from "../domain/mandate/mandate.js";
+import { tokenAssetId } from "../domain/mandate/terms.js";
 import { missing } from "../domain/shared.js";
 import { periodLines, periodOf, type Subscription } from "../domain/subscription/subscription.js";
 import { hostedInvoiceUrl, loadCatalog } from "./invoices.js";
+import { payerTransactions } from "./mandates.js";
 import type { AssetFacts, Billing } from "./ports.js";
 
 interface Party {
@@ -83,5 +87,58 @@ export async function subscriptionNotificationContext(b: Billing, id: string): P
     renewsAt: sub.currentPeriodEnd,
     nextAmount: next.totals.total,
     items: next.lines.map((l) => ({ description: l.description, quantity: l.quantity })),
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Mandate mails (lld/billing.md v1.7 §14 d11)
+// ---------------------------------------------------------------------------------------------
+
+export interface MandateNotificationData {
+  readonly mandate: Mandate;
+  readonly subscription: Subscription | null;
+  readonly merchantDisplayName: string;
+  readonly customerEmail: string | null;
+  readonly customerName: string | null;
+  readonly tokenAsset: AssetFacts | null;
+  readonly cancelTx: NearTx | null;
+  readonly withdrawTx: NearTx | null;
+  /** The invoice that fell back to `send_invoice` (`mandate.insufficient_funds`); null otherwise. */
+  readonly invoiceId: string | null;
+  /** Hosted page of the subscription's latest invoice (with its secret) — PII-grade, never in events. */
+  readonly manageUrl: string | null;
+}
+
+/** `getMandateNotificationContext` (acts in the mandate's own scope). */
+export async function mandateNotificationContext(b: Billing, id: string): Promise<MandateNotificationData> {
+  const r = await b.store.transaction(async (tx) => {
+    const m = await tx.mandates.getByIdUnscoped(id);
+    if (!m) throw missing("mandate", id);
+    // a mode-mismatched mandate names a subscription of the other mode: read it in its own row's scope
+    const sub = (await tx.subscriptions.getByIdUnscoped(m.subscriptionId)) ?? null;
+    const latest = sub?.latestInvoiceId ? await tx.invoices.get(sub, sub.latestInvoiceId) : undefined;
+    return { m, sub, latest };
+  });
+  const { m, sub, latest } = r;
+  const [merchant, customer, asset] = await Promise.all([
+    b.merchant.context(m),
+    sub ? b.payments.getCustomer(sub, sub.customerId) : Promise.resolve(undefined),
+    b.assets.asset(tokenAssetId(m.token)),
+  ]);
+  const usable = customer && !customer.deleted;
+  const tx = payerTransactions(m);
+  const fellBack =
+    latest && latest.mandateId === m.id && latest.collectionMethod === "send_invoice" && isPayable(latest);
+  return {
+    mandate: m,
+    subscription: sub,
+    merchantDisplayName: merchant.displayName,
+    customerEmail: usable ? customer.email : null,
+    customerName: usable ? customer.name : null,
+    tokenAsset: asset ?? null,
+    cancelTx: tx.cancel,
+    withdrawTx: tx.withdraw,
+    invoiceId: fellBack ? latest.id : null,
+    manageUrl: latest && latest.status !== "void" ? hostedInvoiceUrl(b, latest) : null,
   };
 }

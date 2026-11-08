@@ -19,9 +19,11 @@ import { deadLetterSink, type Kysely } from "@nearpay-internal/db";
 import type { Subject } from "@nearpay-internal/spec";
 import { onCheckoutSessionExpired, onPaymentIntentFailed, onPaymentIntentSucceeded } from "../app/payment-events.js";
 import type { Billing } from "../app/ports.js";
+import { onVaultEvent, type VaultEventRecord } from "../app/vault-events.js";
 import type { IntentFacts } from "../domain/invoice/payment.js";
 import type { Scope } from "../domain/shared.js";
 import type { DB } from "../infra/db/schema.js";
+import { VaultEventRecord as VaultEventRecordSchema } from "../spec-0.4.0.js";
 
 function scopeOf(e: Envelope): Scope {
   if (!e.account_id || e.livemode === null) throw new Error(`${e.subject} ${e.id} has no account scope`);
@@ -77,6 +79,40 @@ export function billingHandlers(b: Billing): Partial<Record<Subject, EventHandle
         object: { id: cs.id, invoiceId: cs.invoice },
       });
     },
+  };
+}
+
+/**
+ * `evt.rails.vault.event` (spec 0.4.0, lld/billing.md §6): the envelope has no account (`account_id` null)
+ * and `livemode` = the vault's mode; the scope comes from the mandate / the subscription its `ext_ref`
+ * names. A payload that does not parse is parked, never thrown (the stream must not block on one event).
+ * Registered in `billingHandlers` with the 0.4.0 bump (Phase B: the subject is not in the 0.3.1 catalogue).
+ */
+export function vaultEventHandler(b: Billing): EventHandler {
+  return async (e) => {
+    if (e.livemode === null) {
+      b.log.error({ event: e.id }, "ALERT vault event without livemode: ignored");
+      return;
+    }
+    const parsed = VaultEventRecordSchema.safeParse(e.data.object);
+    if (!parsed.success) {
+      b.log.error({ event: e.id, error: parsed.error.message.slice(0, 500) }, "ALERT unparsable vault event parked");
+      await b.store.transaction((tx) =>
+        tx.vaultEvents.park({
+          dedupeKey: `envelope:${e.id}`,
+          vaultContract: null,
+          livemode: e.livemode,
+          onchainId: null,
+          event: null,
+          reason: "bad_schema",
+          error: parsed.error.message.slice(0, 1000),
+          payload: e.data.object,
+          retryAt: null,
+        }),
+      );
+      return;
+    }
+    await onVaultEvent(b, { livemode: e.livemode, record: parsed.data as unknown as VaultEventRecord });
   };
 }
 

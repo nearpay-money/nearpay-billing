@@ -23,18 +23,41 @@ import type {
   SubscriptionNotificationContext,
 } from "@nearpay-internal/spec";
 import type { InvoicePaymentSessionData, PublicInvoiceData } from "../app/hosted.js";
-import type { InvoiceNotificationData, SubscriptionNotificationData } from "../app/notification.js";
+import type { FundingData, PublicMandateData, SimulationData } from "../app/mandates.js";
+import type {
+  InvoiceNotificationData,
+  MandateNotificationData,
+  SubscriptionNotificationData,
+} from "../app/notification.js";
 import type { EventObject } from "../app/ports.js";
 import type { ClockAdvance } from "../app/subscriptions.js";
 import type { Reminder } from "../domain/dunning/dunning.js";
 import { nextReminder } from "../domain/dunning/dunning.js";
 import type { Invoice } from "../domain/invoice/invoice.js";
 import type { TaxAmount } from "../domain/invoice/lines.js";
+import type { NearTx } from "../domain/mandate/funding.js";
+import {
+  canceledByRole,
+  fundedPeriods,
+  type Mandate,
+  nextCollectAt,
+  onchainActive,
+} from "../domain/mandate/mandate.js";
+import { tokenAssetId } from "../domain/mandate/terms.js";
 import type { Price } from "../domain/price/price.js";
 import type { Product } from "../domain/product/product.js";
 import type { Pricing } from "../domain/shared.js";
 import type { Subscription } from "../domain/subscription/subscription.js";
 import { ppmToPercentage, type TaxRate } from "../domain/tax-rate/tax-rate.js";
+import type {
+  MandateCancelInstructions,
+  MandateFundingInstructions,
+  MandateNotificationContext,
+  Mandate as MandateObj,
+  MandateSimulation,
+  NearTransactionRequest,
+  PublicMandate,
+} from "../spec-0.4.0.js";
 
 type PublicInvoiceObj = z.infer<typeof PublicInvoice>;
 type InvoicePaymentSessionObj = z.infer<typeof InvoicePaymentSession>;
@@ -183,6 +206,22 @@ export function invoiceView(inv: Invoice, o: InvoiceViewOptions): InvoiceObj {
     uncollectible_reason: inv.uncollectibleReason,
     metadata: { ...inv.metadata },
     sequence: inv.version,
+    // stage 4 (spec 0.4.0 optional fields; the 0.3.1 type does not know them yet)
+    ...({
+      collection_method: inv.collectionMethod,
+      mandate: inv.mandateId,
+      mandate_collection: inv.mandateCollection
+        ? {
+            mandate: inv.mandateCollection.mandateId,
+            period: inv.mandateCollection.period,
+            token: inv.mandateCollection.assetId,
+            merchant_share: inv.mandateCollection.merchantShare.toString(),
+            fee: inv.mandateCollection.fee.toString(),
+            tx_hash: inv.mandateCollection.txHash,
+            receipt_id: inv.mandateCollection.receiptId,
+          }
+        : null,
+    } as object),
   };
 }
 
@@ -226,6 +265,8 @@ export function subscriptionView(s: Subscription, prices: ReadonlyMap<string, Pr
     description: s.description,
     metadata: { ...s.metadata },
     sequence: s.version,
+    // stage 4 (spec 0.4.0)
+    ...({ collection_method: s.collectionMethod, mandate: s.mandateId } as object),
   };
 }
 
@@ -246,6 +287,7 @@ export function eventRenderer(apiOrigin: string): (o: EventObject) => Record<str
   return (o) => {
     if (o.kind === "subscription") return subscriptionView(o.subscription, o.prices);
     if (o.kind === "invoice_reminder") return reminderEvent(o.invoice, o.reminder);
+    if (o.kind === "mandate") return mandateView(o.mandate);
     return invoiceView(o.invoice, { hostedInvoiceUrl: null, apiOrigin });
   };
 }
@@ -394,4 +436,192 @@ export function clockAdvanceView(a: ClockAdvance): z.infer<typeof SubscriptionCl
     clock_time: a.clockTime,
     advanced_by: a.advancedBy,
   };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stage 4: mandates (spec 0.4.0 `public/mandates.ts`, internal `billing.ts`)
+// ---------------------------------------------------------------------------------------------
+
+type MandateT = z.infer<typeof MandateObj>;
+
+export function nearTxView(tx: NearTx): z.infer<typeof NearTransactionRequest> {
+  return {
+    signer_id: tx.signerId,
+    receiver_id: tx.receiverId,
+    actions: [
+      { type: "FunctionCall", method_name: tx.methodName, args: { ...tx.args }, gas: tx.gas, deposit: tx.deposit },
+    ],
+  } as z.infer<typeof NearTransactionRequest>;
+}
+
+/** The public `Mandate` (events, webhooks and API reads; public chain data only, no email). */
+export function mandateView(m: Mandate): MandateT {
+  const next = nextCollectAt(m);
+  const c = m.lastCollection;
+  return {
+    id: pid<"md">(m.id),
+    object: "mandate",
+    created: m.created,
+    livemode: m.livemode,
+    status: m.status,
+    link_status: m.linkStatus,
+    unlinked_reason: m.unlinkedReason,
+    collecting: m.linkStatus === "linked" && m.releasedAt === null && onchainActive(m),
+    subscription: pid<"sub">(m.subscriptionId),
+    customer: pid<"cus">(m.customerId),
+    vault_contract: m.vaultContract,
+    onchain_id: m.onchainId,
+    payer: m.payer,
+    token: m.token,
+    asset_id: tokenAssetId(m.token),
+    merchant_receiver: m.merchantReceiver,
+    receiver_kind: m.receiverKind,
+    settlement_destination: opt<"sd">(m.settlementDestinationId),
+    amount_per_period: m.amountPerPeriod.toString(),
+    period_secs: m.periodSecs,
+    start_at: Number(m.startAtNs / 1_000_000_000n),
+    max_periods: m.maxPeriods,
+    fee_bps: m.feeBps,
+    collected_periods: m.collectedPeriods,
+    balance: m.balance.toString(),
+    funded_periods: fundedPeriods(m),
+    next_collect_at: next,
+    last_collection: c
+      ? {
+          period: c.period,
+          amount: c.amount.toString(),
+          merchant_share: c.merchantShare.toString(),
+          fee: c.fee.toString(),
+          short: c.short,
+          invoice: opt<"in">(c.invoiceId),
+          tx_hash: c.txHash,
+          receipt_id: c.receiptId,
+          collected_at: c.collectedAt,
+        }
+      : null,
+    collect_failures: m.keeper.collectFailures,
+    canceled: m.canceled
+      ? {
+          by: m.canceled.by,
+          by_role: canceledByRole(m, m.canceled.by),
+          refunded: m.canceled.refunded.toString(),
+          canceled_at: m.canceled.at,
+        }
+      : null,
+    withdrawn: m.withdrawn.toString(),
+    ext_ref: m.extRef,
+    sequence: m.version,
+  } as MandateT;
+}
+
+export function fundingView(d: FundingData): z.infer<typeof MandateFundingInstructions> {
+  const f = d.funding;
+  const t = f.terms;
+  return {
+    object: "mandate_funding_instructions",
+    livemode: d.livemode,
+    subscription: pid<"sub">(d.subscriptionId),
+    vault_contract: f.vaultContract,
+    token: t.token,
+    asset_id: t.assetId,
+    amount: f.amount.toString(),
+    periods: f.periods,
+    amount_per_period: t.amountPerPeriod.toString(),
+    period_secs: t.periodSecs,
+    start_at: t.startAtNs === null ? null : t.startAtNs.toString(),
+    fee_bps: t.feeBps,
+    merchant_receiver: t.merchantReceiver,
+    receiver_kind: t.receiverKind,
+    settlement_destination: pid<"sd">(t.settlementDestinationId),
+    ext_ref: t.extRef,
+    msg: f.msg,
+    payer: f.payer,
+    storage: { payer_registered: f.payerRegistered, deposit: f.storageDeposit.toString() },
+    payer_notice: f.payerNotice,
+    transactions: f.transactions.map(nearTxView),
+  } as z.infer<typeof MandateFundingInstructions>;
+}
+
+export function cancelInstructionsView(m: Mandate, tx: NearTx): z.infer<typeof MandateCancelInstructions> {
+  return { object: "mandate_cancel_instructions", mandate: pid<"md">(m.id), transaction: nearTxView(tx) } as z.infer<
+    typeof MandateCancelInstructions
+  >;
+}
+
+export function publicMandateView(d: PublicMandateData): z.infer<typeof PublicMandate> {
+  const m = d.mandate;
+  return {
+    id: pid<"md">(m.id),
+    object: "mandate",
+    livemode: m.livemode,
+    status: m.status,
+    link_status: m.linkStatus,
+    payer: m.payer,
+    vault_contract: m.vaultContract,
+    onchain_id: m.onchainId,
+    token: m.token,
+    asset_id: tokenAssetId(m.token),
+    amount_per_period: m.amountPerPeriod.toString(),
+    period_secs: m.periodSecs,
+    balance: m.balance.toString(),
+    funded_periods: fundedPeriods(m),
+    collected_periods: m.collectedPeriods,
+    next_collect_at: nextCollectAt(m),
+    collecting: d.collecting,
+    top_up_msg: d.tx.topUpMsg,
+    transactions: {
+      cancel: d.tx.cancel ? nearTxView(d.tx.cancel) : null,
+      withdraw: d.tx.withdraw ? nearTxView(d.tx.withdraw) : null,
+    },
+  } as z.infer<typeof PublicMandate>;
+}
+
+export function simulationView(s: SimulationData): z.infer<typeof MandateSimulation> {
+  return {
+    object: "mandate_simulation",
+    action: s.action,
+    tx_hash: s.txHash,
+    accepted: s.accepted,
+    rejection: s.rejection,
+    onchain_id: s.onchainId,
+    logs: [...s.logs],
+  } as z.infer<typeof MandateSimulation>;
+}
+
+export function mandateNotificationView(d: MandateNotificationData): z.infer<typeof MandateNotificationContext> {
+  const m = d.mandate;
+  const s = d.subscription;
+  return {
+    account_id: accountId(m.accountId),
+    livemode: m.livemode,
+    merchant_display_name: d.merchantDisplayName,
+    customer: pid<"cus">(m.customerId),
+    customer_email: d.customerEmail,
+    customer_name: d.customerName,
+    mandate: pid<"md">(m.id),
+    subscription: pid<"sub">(m.subscriptionId),
+    status: m.status,
+    link_status: m.linkStatus,
+    unlinked_reason: m.unlinkedReason,
+    payer: m.payer,
+    vault_contract: m.vaultContract,
+    onchain_id: m.onchainId,
+    token_asset: d.tokenAsset
+      ? { asset_id: d.tokenAsset.assetId as AssetIdT, symbol: d.tokenAsset.symbol, decimals: d.tokenAsset.decimals }
+      : { asset_id: tokenAssetId(m.token) as AssetIdT, symbol: m.token, decimals: 0 },
+    amount_per_period: m.amountPerPeriod.toString(),
+    recurring: s ? { interval: s.recurring.interval, interval_count: s.recurring.intervalCount } : null,
+    balance: m.balance.toString(),
+    next_collect_at: optIso(nextCollectAt(m)),
+    refunded: m.canceled ? m.canceled.refunded.toString() : null,
+    cancel_transaction: d.cancelTx ? nearTxView(d.cancelTx) : null,
+    withdraw_transaction: d.withdrawTx ? nearTxView(d.withdrawTx) : null,
+    invoice: opt<"in">(d.invoiceId),
+    manage_url: d.manageUrl,
+  } as z.infer<typeof MandateNotificationContext>;
+}
+
+/** `PublicInvoice.auto_debit` (spec 0.4.0). */
+export function publicAutoDebitView(a: { available: boolean; mandate: string | null; collecting: boolean } | null) {
+  return a ? { available: a.available, mandate: opt<"md">(a.mandate), collecting: a.collecting } : null;
 }

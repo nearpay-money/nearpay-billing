@@ -21,6 +21,8 @@
     "verify": "pnpm typecheck && pnpm lint && pnpm coverage && pnpm test:integration && pnpm build"
   },
   "dependencies": {
+    "@near-js/crypto": "2.5.1",
+    "@near-js/transactions": "2.5.1",
     "@nearpay-internal/auth": "0.3.1",
     "@nearpay-internal/bus": "0.3.1",
     "@nearpay-internal/db": "0.3.1",
@@ -30,6 +32,9 @@
     "@nearpay-internal/service": "0.3.1",
     "@nearpay-internal/spec": "0.3.1",
     "@nearpay/spec": "0.3.1",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "bs58": "6.0.0",
     "kysely": "0.29.8",
     "zod": "4.6.7"
   },

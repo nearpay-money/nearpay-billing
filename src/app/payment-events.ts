@@ -30,7 +30,7 @@ async function lockInvoice(b: Billing, tx: BillingTx, scope: Scope, invoiceId: s
 }
 
 /** After an invoice was paid: its subscription may become `active` again (and resume renewals). */
-async function subscriptionAfterPaid(b: Billing, tx: BillingTx, inv: Invoice): Promise<void> {
+export async function subscriptionAfterPaid(b: Billing, tx: BillingTx, inv: Invoice, actor = SYSTEM): Promise<void> {
   if (!inv.subscriptionId) return;
   const sub = await tx.subscriptions.get(inv, inv.subscriptionId, { lock: true });
   if (!sub) return;
@@ -38,7 +38,7 @@ async function subscriptionAfterPaid(b: Billing, tx: BillingTx, inv: Invoice): P
   const now = clockS(b, sub);
   const next = onInvoicePaid(sub, { invoiceId: inv.id, otherOverdueOpen }, now);
   if (!next) return;
-  const saved = await saveSubscription(tx, sub, next, { actor: SYSTEM, cause: `invoice ${inv.id} paid` }, [
+  const saved = await saveSubscription(tx, sub, next, { actor, cause: `invoice ${inv.id} paid` }, [
     "evt.billing.subscription.updated",
   ]);
   // paused subscriptions resume: the next renewal runs at current_period_end (immediately if past, §11 d8)

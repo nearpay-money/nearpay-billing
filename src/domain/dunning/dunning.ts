@@ -38,7 +38,7 @@ export function scheduleOf(inv: Invoice): Reminder[] {
 
 /** Next reminder of an `open` invoice (`next_reminder_at`); null when none is due any more. */
 export function nextReminder(inv: Invoice): Reminder | null {
-  if (inv.status !== "open") return null;
+  if (inv.status !== "open" || inv.collectionMethod === "auto_debit") return null;
   return scheduleOf(inv)[inv.remindersSent] ?? null;
 }
 
@@ -60,6 +60,9 @@ export function reminderToSend(
   number: number,
   now: number,
 ): { reminder: Reminder; invoice: Invoice } | null {
+  // an auto-debit invoice is collected by the keeper: no reminder mail while it is (reminders that pass
+  // meanwhile are skipped when it falls back to `send_invoice`, mandate/collection.ts)
+  if (inv.collectionMethod === "auto_debit") return null;
   const unpaid =
     inv.status === "open" || (inv.status === "uncollectible" && inv.uncollectibleReason === "dunning_exhausted");
   if (!unpaid) return null;
@@ -75,6 +78,7 @@ export function reminderToSend(
  * retries later instead of skipping, so reminders still go out in order and none is lost (§13).
  */
 export function reminderWaitsForEarlier(inv: Invoice, number: number, now: number): boolean {
+  if (inv.collectionMethod === "auto_debit") return false;
   const unpaid =
     inv.status === "open" || (inv.status === "uncollectible" && inv.uncollectibleReason === "dunning_exhausted");
   if (!unpaid) return false;

@@ -67,10 +67,16 @@ export interface Dunning {
   readonly onExhausted: "cancel" | "unpaid";
 }
 
+/** `send_invoice` (emailed invoices) or `auto_debit` (vault mandate, lld/billing.md v1.7 §14 d6). */
+export type SubscriptionCollectionMethod = "send_invoice" | "auto_debit";
+
 export interface Subscription extends Scope, Pricing {
   readonly id: string;
   readonly customerId: string;
   readonly status: SubscriptionStatus;
+  readonly collectionMethod: SubscriptionCollectionMethod;
+  /** The linked mandate renewals are collected from (null when none, Stage 4). */
+  readonly mandateId: string | null;
   readonly items: readonly SubscriptionItem[];
   readonly recurring: Recurring;
   readonly anchor: number;
@@ -190,6 +196,7 @@ export function resolveItems(
 
 export interface SubscriptionCreate {
   readonly customerId: string;
+  readonly collectionMethod?: SubscriptionCollectionMethod | undefined;
   readonly items: readonly SubscriptionItem[];
   readonly pricing: Pricing;
   readonly recurring: Recurring;
@@ -220,6 +227,8 @@ export function newSubscription(scope: Scope, id: string, now: number, input: Su
     ...scope,
     id,
     customerId: input.customerId,
+    collectionMethod: input.collectionMethod ?? "send_invoice",
+    mandateId: null,
     items: input.items,
     currency: input.pricing.currency,
     assetId: input.pricing.assetId,
@@ -336,6 +345,16 @@ export function renew(s: Subscription, now: number): RenewalDecision {
   };
 }
 
+/** The subscription's linked mandate changed (linked on `mandate_created`, cleared on release). */
+export const withMandate = (s: Subscription, mandateId: string | null, now: number): Subscription => ({
+  ...s,
+  mandateId,
+  updated: now,
+});
+
+/** The subscription ended for good: a linked mandate is released (§14 d7). */
+export const hasEnded = (s: Pick<Subscription, "status">): boolean => s.status === "canceled";
+
 /** `renewal_upcoming` fires 3 days before the period end for subscriptions that will renew. */
 export function renewalUpcomingAt(s: Subscription): number {
   return s.currentPeriodEnd - RENEWAL_UPCOMING_SECONDS;
@@ -429,6 +448,7 @@ export function cancel(s: Subscription, now: number, atPeriodEnd: boolean): Subs
 
 export interface SubscriptionPatch {
   readonly items?: readonly SubscriptionItem[] | undefined;
+  readonly collectionMethod?: SubscriptionCollectionMethod | undefined;
   readonly daysUntilDue?: number | undefined;
   readonly defaultTaxRateIds?: readonly string[] | undefined;
   readonly dunning?:
@@ -457,6 +477,13 @@ export function patchSubscription(s: Subscription, patch: SubscriptionPatch, now
   return {
     ...s,
     ...(patch.items !== undefined ? { items: patch.items } : {}),
+    ...(patch.collectionMethod !== undefined
+      ? {
+          collectionMethod: patch.collectionMethod,
+          // leaving auto_debit unlinks the mandate (the app releases it, §14 d6–d7)
+          ...(patch.collectionMethod === "send_invoice" ? { mandateId: null } : {}),
+        }
+      : {}),
     ...(patch.daysUntilDue !== undefined ? { daysUntilDue: patch.daysUntilDue } : {}),
     ...(patch.defaultTaxRateIds !== undefined ? { defaultTaxRateIds: patch.defaultTaxRateIds } : {}),
     ...(patch.dunning !== undefined

@@ -3,8 +3,11 @@
  * renewal of any subscription whose period ended more than 10 minutes ago without one (belt and braces:
  * renewals are idempotent per subscription × period, so a duplicate does nothing). "Ended" is on the
  * subscription's billing clock (`now() + clock_offset_s`, lld/billing.md §13; the offset is 0 in live mode).
+ * Stage 4: parked retriable vault events are re-applied every minute (§6).
  */
 import { enqueueJob, type Kysely, purgeKitTables, type RecurringJob, sql } from "@nearpay-internal/db";
+import type { Billing } from "../app/ports.js";
+import { retryParkedVaultEvents } from "../app/vault-events.js";
 import type { DB } from "../infra/db/schema.js";
 import { idOf } from "../infra/db/store.js";
 
@@ -13,10 +16,15 @@ const MINUTE = 60_000;
 export const RECURRING: readonly RecurringJob[] = [
   { kind: "kit.purge", everyMs: 60 * MINUTE },
   { kind: "subscription.sweep", everyMs: 5 * MINUTE },
+  // Stage 4: parked retriable vault events (lld/billing.md §6) — every minute
+  { kind: "vault.parked_retry", everyMs: MINUTE },
 ];
 
-export function recurringHandlers(db: Kysely<DB>): Record<string, (payload: unknown) => Promise<void>> {
+export function recurringHandlers(db: Kysely<DB>, b?: Billing): Record<string, (payload: unknown) => Promise<void>> {
   return {
+    "vault.parked_retry": async () => {
+      if (b) await retryParkedVaultEvents(b);
+    },
     "kit.purge": async () => {
       await purgeKitTables(db);
       await sql`delete from rate_counters where window_start < now() - interval '1 day'`.execute(db);

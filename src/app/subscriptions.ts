@@ -3,9 +3,11 @@
  * trial), update (from the next renewal, no proration), cancel (now or at period end), the renewal job
  * (`subscription.renew`, idempotent per subscription × period start) and `renewal_upcoming`.
  */
-import { type Invoice, markSent, newDraft } from "../domain/invoice/invoice.js";
+import { type Invoice, markPaidByCollection, markSent, newDraft } from "../domain/invoice/invoice.js";
 import type { Period } from "../domain/invoice/lines.js";
 import { priceLines } from "../domain/invoice/lines.js";
+import { classifyCollection, evidenceOf } from "../domain/mandate/collection.js";
+import { isCollecting, type Mandate } from "../domain/mandate/mandate.js";
 import { DomainError, type Metadata, missing, type Scope, stateConflict } from "../domain/shared.js";
 import {
   type ClockTarget,
@@ -26,11 +28,21 @@ import {
 } from "../domain/subscription/subscription.js";
 import { resolveTaxRates } from "../domain/tax-rate/tax-rate.js";
 import { type Ctx, type Meta, saveInvoice, saveSubscription } from "./commit.js";
-import { assertCanCollect, clockS, finalizeInTx, liveCustomer, loadCatalog, nowS } from "./invoices.js";
+import { assertCanCollect, clockS, finalizeInTx, liveCustomer, loadCatalog, nowS, renderPdfLater } from "./invoices.js";
+import {
+  advanceMandateClock,
+  assertAmountUnchanged,
+  assertAutoDebitPricing,
+  releaseIfEnded,
+  tokenDecimals,
+} from "./mandates.js";
+import { subscriptionAfterPaid } from "./payment-events.js";
 import type { Billing, BillingTx, CustomerFacts, MerchantFacts, Page, SubscriptionRepo } from "./ports.js";
+import { enqueueCollect } from "./vault-events.js";
 
 export interface SubscriptionCreateInput {
   readonly customerId: string;
+  readonly collectionMethod?: "send_invoice" | "auto_debit" | undefined;
   readonly items: readonly ItemInput[];
   readonly daysUntilDue?: number | undefined;
   readonly trialPeriodDays?: number | undefined;
@@ -91,6 +103,10 @@ async function issuePeriodInvoice(
     readonly customer: CustomerFacts;
     readonly meta: Meta;
     readonly requireActive: boolean;
+    /** A collecting mandate: the invoice is `auto_debit` (finalized, not emailed) and collected from it. */
+    readonly mandate?: Mandate | undefined;
+    /** The mandate token's decimals (to apply an unapplied collection). */
+    readonly decimals?: number | undefined;
   },
 ): Promise<Invoice> {
   const existing = await tx.invoices.bySubscriptionPeriod(sub, sub.id, o.period.start);
@@ -121,9 +137,11 @@ async function issuePeriodInvoice(
     settlementDestinationId: sub.settlementDestinationId,
     metadata: sub.metadata,
     clockOffset: sub.clockOffset ?? 0,
+    ...(o.mandate ? { collectionMethod: "auto_debit" as const, mandateId: o.mandate.id } : {}),
   });
   const created = await saveInvoice(tx, null, draft, o.meta, ["evt.billing.invoice.created"]);
   const open = await finalizeInTx(b, tx, created, { merchant: o.merchant, customer: o.customer, meta: o.meta });
+  if (o.mandate) return collectAutoDebit(b, tx, o.mandate, open, o.decimals);
   if (!o.customer.email) {
     b.log.warn(
       { invoice: open.id, subscription: sub.id },
@@ -136,6 +154,42 @@ async function issuePeriodInvoice(
   ]);
 }
 
+/**
+ * An `auto_debit` renewal invoice (§14 d6): a full collection already counted ahead of billing (someone ran
+ * the permissionless `collect` early) pays it at once; otherwise the keeper's `mandate.collect` is enqueued.
+ */
+async function collectAutoDebit(
+  b: Billing,
+  tx: BillingTx,
+  m: Mandate,
+  inv: Invoice,
+  decimals: number | undefined,
+): Promise<Invoice> {
+  const early = await tx.mandates.unappliedCollection(m);
+  if (early && decimals !== undefined) {
+    const outcome = classifyCollection(m, early, inv, decimals);
+    if (outcome.kind === "paid") {
+      await tx.mandates.applyCollection(early.receiptId, inv.id, "paid");
+      const paid = await saveInvoice(
+        tx,
+        inv,
+        markPaidByCollection(inv, clockS(b, inv), evidenceOf(m, { ...early, invoiceId: inv.id })),
+        {
+          actor: "system:keeper",
+          cause: `paid by period ${early.period} collected earlier`,
+          evidence: { receipt_id: early.receiptId },
+        },
+        ["evt.billing.invoice.paid"],
+      );
+      await renderPdfLater(tx, paid);
+      await subscriptionAfterPaid(b, tx, paid, "system:keeper");
+      return paid;
+    }
+  }
+  await enqueueCollect(tx, m, inv, clockS(b, inv) - (inv.clockOffset ?? 0));
+  return inv;
+}
+
 export async function createSubscription(b: Billing, c: Ctx, input: SubscriptionCreateInput): Promise<Subscription> {
   const customer = await liveCustomer(b, c.scope, input.customerId);
   if (!customer.email) throw new DomainError("customer_email_missing", { customer: customer.id }, "customer");
@@ -146,6 +200,7 @@ export async function createSubscription(b: Billing, c: Ctx, input: Subscription
     resolveTaxRates(defaults, catalog.taxRates, c.scope, "default_tax_rates");
     return resolveItems(input.items, { scope: c.scope, catalog, newId: () => b.newId("si") });
   });
+  if (input.collectionMethod === "auto_debit") assertAutoDebitPricing(b, pricing, "new");
   const merchant = await assertCanCollect(b, c.scope, {
     pricing,
     settlementDestinationId: input.settlementDestinationId ?? null,
@@ -157,6 +212,7 @@ export async function createSubscription(b: Billing, c: Ctx, input: Subscription
     const r = resolveItems(input.items, { scope: c.scope, catalog, newId: () => b.newId("si") });
     let sub = newSubscription(c.scope, b.newId("sub"), now, {
       customerId: input.customerId,
+      collectionMethod: input.collectionMethod,
       items: r.items,
       pricing: r.pricing,
       recurring: r.recurring,
@@ -226,7 +282,19 @@ export function updateSubscription(
         }).items
       : undefined;
     const next = patchSubscription(cur, { ...input, items }, clockS(b, cur));
-    return saveSubscription(tx, cur, next, { actor: c.actor, cause: "updated" }, ["evt.billing.subscription.updated"]);
+    if (next.collectionMethod === "auto_debit" && cur.collectionMethod !== "auto_debit")
+      assertAutoDebitPricing(b, next, cur.id);
+    await assertAmountUnchanged(tx, cur, next);
+    const meta = { actor: c.actor, cause: "updated" };
+    // leaving auto_debit releases the linked mandate (§14 d6–d7); the row is saved first, then released
+    const saved = await saveSubscription(
+      tx,
+      cur,
+      next.collectionMethod === "send_invoice" ? { ...next, mandateId: cur.mandateId } : next,
+      meta,
+      ["evt.billing.subscription.updated"],
+    );
+    return releaseIfEnded(b, tx, saved, meta);
   });
 }
 
@@ -235,13 +303,11 @@ export function cancelSubscription(b: Billing, c: Ctx, id: string, atPeriodEnd: 
     const cur = await tx.subscriptions.get(c.scope, id, { lock: true });
     if (!cur) throw missing("subscription", id);
     const next = cancel(cur, clockS(b, cur), atPeriodEnd);
-    return saveSubscription(
-      tx,
-      cur,
-      next,
-      { actor: c.actor, cause: atPeriodEnd ? "cancel at period end" : "canceled" },
-      [atPeriodEnd ? "evt.billing.subscription.updated" : "evt.billing.subscription.deleted"],
-    );
+    const meta = { actor: c.actor, cause: atPeriodEnd ? "cancel at period end" : "canceled" };
+    const saved = await saveSubscription(tx, cur, next, meta, [
+      atPeriodEnd ? "evt.billing.subscription.updated" : "evt.billing.subscription.deleted",
+    ]);
+    return releaseIfEnded(b, tx, saved, meta);
   });
 }
 
@@ -271,7 +337,7 @@ export async function advanceSubscriptionClock(
   target: ClockTarget,
 ): Promise<ClockAdvance> {
   if (c.scope.livemode) throw new DomainError("livemode_forbidden");
-  return b.store.transaction(async (tx) => {
+  const out = await b.store.transaction(async (tx) => {
     const cur = await tx.subscriptions.get(c.scope, id, { lock: true });
     if (!cur) throw missing("subscription", id);
     const clock = clockS(b, cur);
@@ -290,6 +356,9 @@ export async function advanceSubscriptionClock(
     b.log.info({ subscription: id, target, delta, jobs: moved }, "billing.test_clock.advanced");
     return { subscription: advanced, target, clockTime: at, advancedBy: delta };
   });
+  // the linked mandate's stand-in clock moves with it, so renewals and vault periods stay aligned (§14 d12)
+  await advanceMandateClock(b, out.subscription, out.advancedBy);
+  return out;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -325,7 +394,14 @@ export async function renewJob(b: Billing, j: SubscriptionJob): Promise<void> {
   // peer reads before the transaction (merchant name for the number prefix, customer for bill-to/mail)
   const peers =
     first.kind === "invoice"
-      ? { merchant: await b.merchant.context(j.scope), customer: await liveCustomer(b, j.scope, before.customerId) }
+      ? {
+          merchant: await b.merchant.context(j.scope),
+          customer: await liveCustomer(b, j.scope, before.customerId),
+          decimals:
+            before.collectionMethod === "auto_debit"
+              ? await tokenDecimals(b, before, undefined)
+              : new Map<string, number>(),
+        }
       : null;
   await b.store.transaction(async (tx) => {
     const cur = await tx.subscriptions.get(j.scope, j.subscription, { lock: true });
@@ -334,7 +410,8 @@ export async function renewJob(b: Billing, j: SubscriptionJob): Promise<void> {
     const d = renew(cur, now);
     const meta = { actor: SYSTEM, cause: `renewal at ${cur.currentPeriodEnd}` };
     if (d.kind === "end") {
-      await saveSubscription(tx, cur, d.subscription, meta, ["evt.billing.subscription.deleted"]);
+      const ended = await saveSubscription(tx, cur, d.subscription, meta, ["evt.billing.subscription.deleted"]);
+      await releaseIfEnded(b, tx, ended, meta);
       return;
     }
     if (d.kind === "wait") {
@@ -346,6 +423,11 @@ export async function renewJob(b: Billing, j: SubscriptionJob): Promise<void> {
     const advanced = await saveSubscription(tx, cur, withLatestInvoice(d.subscription, invoiceId, now), meta, [
       "evt.billing.subscription.updated",
     ]);
+    // auto_debit with a collecting mandate: an auto-debit invoice collected by the keeper; otherwise a
+    // send_invoice invoice whose hosted page offers auto-debit setup (§14 d6)
+    const collecting =
+      advanced.collectionMethod === "auto_debit" ? await tx.mandates.collectingFor(advanced, advanced.id) : undefined;
+    const mandate = collecting && isCollecting(collecting) ? collecting : undefined;
     const inv = await issuePeriodInvoice(b, tx, advanced, {
       period: d.period,
       billingReason: d.billingReason,
@@ -354,6 +436,8 @@ export async function renewJob(b: Billing, j: SubscriptionJob): Promise<void> {
       customer: peers.customer,
       meta,
       requireActive: false,
+      mandate,
+      decimals: mandate ? peers.decimals.get(mandate.token) : undefined,
     });
     if (inv.id !== invoiceId) {
       // the period was already invoiced (a replayed job): keep the real latest invoice

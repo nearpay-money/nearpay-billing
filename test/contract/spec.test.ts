@@ -160,7 +160,7 @@ describe("objects parse with the spec schemas", () => {
     const render = eventRenderer(opts.apiOrigin);
     for (const e of b.mem.state.outbox) {
       const object = render(e.object);
-      const r = SUBJECTS[e.subject].object.safeParse(object);
+      const r = SUBJECTS[e.subject as keyof typeof SUBJECTS].object.safeParse(object);
       expect(r.success, `${e.subject}: ${r.success ? "" : JSON.stringify(r.error.issues[0])}`).toBe(true);
       if (e.object.kind === "invoice")
         expect((object as { hosted_invoice_url: unknown }).hosted_invoice_url).toBeNull();
@@ -214,6 +214,6 @@ describe("objects parse with the spec schemas", () => {
     ] as const)
       expect(subjects.has(want), want).toBe(true);
     for (const e of b.mem.state.outbox)
-      expect(SUBJECTS[e.subject].object.safeParse(render(e.object)).success).toBe(true);
+      expect(SUBJECTS[e.subject as keyof typeof SUBJECTS].object.safeParse(render(e.object)).success).toBe(true);
   });
 });

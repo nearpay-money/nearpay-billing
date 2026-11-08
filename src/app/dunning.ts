@@ -10,6 +10,7 @@ import type { Scope } from "../domain/shared.js";
 import { onDunningExhausted, onInvoiceOverdue, type Subscription } from "../domain/subscription/subscription.js";
 import { saveInvoice, saveSubscription } from "./commit.js";
 import { clockS, renderPdfLater } from "./invoices.js";
+import { releaseIfEnded } from "./mandates.js";
 import type { Billing, BillingTx } from "./ports.js";
 
 export interface InvoiceJob {
@@ -108,5 +109,7 @@ export function exhaustJob(b: Billing, j: InvoiceJob): Promise<void> {
         subject,
       ]);
     }
+    // a canceled subscription releases its mandate (§14 d7)
+    await releaseIfEnded(b, tx, prev, { actor: SYSTEM, cause: `invoice ${inv.id} dunning exhausted` });
   });
 }

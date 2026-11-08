@@ -11,11 +11,26 @@ import { type InvoiceLine, type Period, type Totals, totalsOf } from "./lines.js
 export type InvoiceStatus = "draft" | "open" | "paid" | "void" | "uncollectible";
 export type BillingReason = "manual" | "subscription_create" | "subscription_cycle";
 export type UncollectibleReason = "merchant" | "dunning_exhausted";
+/** `send_invoice` (hosted page) or `auto_debit` (vault mandate, lld/billing.md v1.7 §14 d6). */
+export type CollectionMethod = "send_invoice" | "auto_debit";
+
+/** The vault collection that paid the invoice (spec `Invoice.mandate_collection`; the evidence, INV-2). */
+export interface MandateCollectionEvidence {
+  readonly mandateId: string;
+  readonly period: number;
+  /** `nep141:<token>`. */
+  readonly assetId: string;
+  readonly merchantShare: bigint;
+  readonly fee: bigint;
+  readonly txHash: string;
+  /** Vault receipt that logged `collected`. */
+  readonly receiptId: string;
+}
 
 export const INVOICE_TRANSITIONS: Readonly<Record<InvoiceStatus, readonly InvoiceStatus[]>> = {
   draft: ["open"],
   open: ["paid", "void", "uncollectible"],
-  uncollectible: ["paid"],
+  uncollectible: ["paid", "void"],
   paid: [],
   void: [],
 };
@@ -49,6 +64,11 @@ export interface Invoice extends Scope, Pricing, Totals {
   readonly customerId: string;
   readonly subscriptionId: string | null;
   readonly billingReason: BillingReason;
+  readonly collectionMethod: CollectionMethod;
+  /** Mandate the keeper collects (or collected) this invoice from (Stage 4). */
+  readonly mandateId: string | null;
+  /** Set when paid by a vault collection instead of a payment intent (Stage 4). */
+  readonly mandateCollection: MandateCollectionEvidence | null;
   readonly number: string | null;
   readonly status: InvoiceStatus;
   readonly description: string | null;
@@ -113,6 +133,8 @@ export interface DraftInput extends Pricing {
   readonly customerId: string;
   readonly subscriptionId?: string | null | undefined;
   readonly billingReason?: BillingReason | undefined;
+  readonly collectionMethod?: CollectionMethod | undefined;
+  readonly mandateId?: string | null | undefined;
   readonly lines: readonly InvoiceLine[];
   readonly totals: Totals;
   readonly defaultTaxRateIds?: readonly string[] | undefined;
@@ -139,6 +161,9 @@ export function newDraft(scope: Scope, id: string, now: number, input: DraftInpu
     customerId: input.customerId,
     subscriptionId: input.subscriptionId ?? null,
     billingReason: input.billingReason ?? "manual",
+    collectionMethod: input.collectionMethod ?? "send_invoice",
+    mandateId: input.mandateId ?? null,
+    mandateCollection: null,
     number: null,
     status: "draft",
     currency: input.currency,
@@ -306,6 +331,37 @@ export function markPaid(
     paidAt: now,
     amountPaid: inv.total,
     session: null,
+  };
+}
+
+/**
+ * `open | uncollectible → paid` by a vault `collected` event (lld/billing.md v1.7 §7.1; only the mandate
+ * collection rules call it). No payment intent: the evidence is the forwarded event (INV-2).
+ */
+export function markPaidByCollection(inv: Invoice, now: number, evidence: MandateCollectionEvidence): Invoice {
+  return {
+    ...moveTo(inv, "paid", now),
+    mandateId: evidence.mandateId,
+    mandateCollection: evidence,
+    paidAt: now,
+    amountPaid: inv.total,
+    session: null,
+  };
+}
+
+/**
+ * `open | uncollectible → void` after a short collection (§7.1; `uncollectible → void` exists only for
+ * this): the collection stays recorded on the invoice and a balance invoice bills the shortfall. The
+ * hosted page stops offering it at once; a settlement that still arrives is listed (INV-3).
+ */
+export function voidAfterShortCollection(inv: Invoice, now: number, evidence: MandateCollectionEvidence): Invoice {
+  if (!isPayable(inv)) throw stateConflict("invoice", inv.status);
+  return {
+    ...moveTo(inv, "void", now),
+    voidedAt: now,
+    session: null,
+    mandateId: evidence.mandateId,
+    mandateCollection: evidence,
   };
 }
 

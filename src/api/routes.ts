@@ -78,7 +78,9 @@ export function merchant(ctx: RequestContext): Ctx {
 }
 
 export function toApiError(e: DomainError): ApiError {
-  return new ApiError(e.code, {
+  // `as never`: 0.4.0 codes (auto_debit_unavailable, vault_cap_exceeded) are unknown to the 0.3.1 kit typings
+  // until the spec bump (Phase B removes the cast)
+  return new ApiError(e.code as never, {
     params: { ...e.params },
     ...(e.param ? { param: e.param } : {}),
     ...(e.upstreamMessage ? { message: e.upstreamMessage } : {}),

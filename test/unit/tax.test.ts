@@ -1,3 +1,4 @@
+import vectors from "@nearpay/spec/test-vectors/billing-tax.json" with { type: "json" };
 import { describe, expect, it } from "vitest";
 import { priceLines } from "../../src/domain/invoice/lines.js";
 import { DomainError } from "../../src/domain/shared.js";
@@ -10,7 +11,6 @@ import {
   type TaxRate,
 } from "../../src/domain/tax-rate/tax-rate.js";
 import { OTHER, SCOPE, T0, taxRate } from "../support/fixtures.js";
-import vectors from "../support/spec-0.3.0-vectors.json" with { type: "json" };
 
 interface VectorTax {
   tax_rate: string;

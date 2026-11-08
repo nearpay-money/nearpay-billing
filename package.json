@@ -28,8 +28,8 @@
     "@nearpay-internal/ids": "0.2.1",
     "@nearpay-internal/money": "0.2.1",
     "@nearpay-internal/service": "0.2.1",
-    "@nearpay-internal/spec": "0.2.1",
-    "@nearpay/spec": "0.2.1",
+    "@nearpay-internal/spec": "0.3.0",
+    "@nearpay/spec": "0.3.0",
     "kysely": "0.29.8",
     "zod": "4.6.7"
   },
@@ -45,8 +45,8 @@
   },
   "pnpm": {
     "overrides": {
-      "@nearpay/spec": "0.2.1",
-      "@nearpay-internal/spec": "0.2.1"
+      "@nearpay/spec": "0.3.0",
+      "@nearpay-internal/spec": "0.3.0"
     },
     "onlyBuiltDependencies": [
       "esbuild",

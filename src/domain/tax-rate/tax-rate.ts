@@ -3,7 +3,7 @@
  * held as `rate_ppm` (percentage × 10 000); `percentage` and `inclusive` are immutable. Line taxes use the
  * spec's normative `computeLineTax` (round half-up per line and rate). Pure.
  */
-import { TAX_PERCENTAGE_RE, type TaxRateInput, taxPercentageToPpm } from "../../spec-0.3.0-placeholder.js";
+import { TaxPercentage, type TaxRateInput, taxPercentageToPpm } from "@nearpay/spec";
 import { DomainError, distinct, type Metadata, mergeMetadata, missing, type Scope } from "../shared.js";
 
 export const MAX_TAX_RATES_PER_LINE = 5;
@@ -46,7 +46,7 @@ export interface TaxRatePatch {
 
 /** Exact `percentage` → ppm; `invalid_request` for anything the spec's `TaxPercentage` rejects. */
 export function percentageToPpm(percentage: string, param = "percentage"): number {
-  if (!TAX_PERCENTAGE_RE.test(percentage))
+  if (!TaxPercentage.safeParse(percentage).success)
     throw new DomainError("invalid_request", { detail: "invalid percentage" }, param);
   return taxPercentageToPpm(percentage);
 }

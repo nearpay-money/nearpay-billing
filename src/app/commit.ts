@@ -6,8 +6,7 @@
  */
 import type { Invoice } from "../domain/invoice/invoice.js";
 import type { Subscription } from "../domain/subscription/subscription.js";
-import type { BillingSubject030 } from "../spec-0.3.0-placeholder.js";
-import type { BillingTx, EventObject } from "./ports.js";
+import type { BillingSubject, BillingTx, EventObject } from "./ports.js";
 
 /** Who acted and why (transition rows, INV-9). */
 export interface Meta {
@@ -23,7 +22,7 @@ export interface Ctx {
   readonly actor: string;
 }
 
-type Subjects = readonly BillingSubject030[];
+type Subjects = readonly BillingSubject[];
 
 function versions(prev: { version: number } | null, events: number): { first: number; final: number } {
   const base = prev ? prev.version : -1;

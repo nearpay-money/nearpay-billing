@@ -2,11 +2,12 @@
  * Money properties of the tax rule (INV-5, lld/billing.md §11 d2): integer-only, round half-up per line
  * and rate, totals consistent, per-rate sums equal the rounded line taxes, ppm ↔ percentage exact.
  */
+
+import { divRoundHalfUp } from "@nearpay/spec";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { type LineDraft, priceLines } from "../../src/domain/invoice/lines.js";
 import { newTaxRate, percentageToPpm, ppmToPercentage, type TaxRate } from "../../src/domain/tax-rate/tax-rate.js";
-import { divRoundHalfUp } from "../../src/spec-0.3.0-placeholder.js";
 import { SCOPE, T0 } from "../support/fixtures.js";
 
 const M = 1_000_000n;

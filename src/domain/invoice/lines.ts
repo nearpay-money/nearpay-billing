@@ -4,7 +4,7 @@
  * (round half-up per line); the tax snapshot (name, percentage) is taken from the rates at computation
  * time and frozen at finalize. Pure.
  */
-import { computeInvoiceTotals } from "../../spec-0.3.0-placeholder.js";
+import { computeInvoiceTotals } from "@nearpay/spec";
 import { type Price, usablePrice } from "../price/price.js";
 import type { Product } from "../product/product.js";
 import { DomainError, type Pricing, type Scope } from "../shared.js";

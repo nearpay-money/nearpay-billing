@@ -1,3 +1,4 @@
+import vectors from "@nearpay/spec/test-vectors/billing-tax.json" with { type: "json" };
 import { describe, expect, it } from "vitest";
 import {
   exhaust,
@@ -28,7 +29,6 @@ import {
   type Subscription,
 } from "../../src/domain/subscription/subscription.js";
 import { mapOf, OTHER, price, product, SCOPE, seqId, T0, taxRate } from "../support/fixtures.js";
-import vectors from "../support/spec-0.3.0-vectors.json" with { type: "json" };
 
 const code = (f: () => unknown): string => {
   try {

@@ -3,7 +3,6 @@
  * (integers, UTC) like the public API; amounts are bigint units of the row's currency (INV-5).
  */
 import type { ErrorCode } from "@nearpay/spec";
-import type { BillingErrorCode030 } from "../spec-0.3.0-placeholder.js";
 
 /** Every read and write is scoped by account and mode (INV-8). `accountId` is the account uuid. */
 export interface Scope {
@@ -11,7 +10,7 @@ export interface Scope {
   readonly livemode: boolean;
 }
 
-export type BillingErrorCode = ErrorCode | BillingErrorCode030;
+export type BillingErrorCode = ErrorCode;
 
 /**
  * A rule refused the request. The API layer maps it to the public error envelope (same code; params fill

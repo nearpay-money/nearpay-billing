@@ -3,6 +3,7 @@
  * Domain objects cross these ports; contract (spec) shapes appear only in the adapters and `src/api`.
  */
 import type { EnvelopeCipher } from "@nearpay-internal/db";
+import type { Subject } from "@nearpay-internal/spec";
 import type { Reminder } from "../domain/dunning/dunning.js";
 import type { Invoice } from "../domain/invoice/invoice.js";
 import type { Price } from "../domain/price/price.js";
@@ -10,7 +11,10 @@ import type { Product } from "../domain/product/product.js";
 import type { Pricing, Scope } from "../domain/shared.js";
 import type { Subscription } from "../domain/subscription/subscription.js";
 import type { TaxRate } from "../domain/tax-rate/tax-rate.js";
-import type { BillingSubject030 } from "../spec-0.3.0-placeholder.js";
+
+/** Billing subjects (spec `SUBJECTS`, producer billing). */
+export type BillingSubject = Extract<Subject, `evt.billing.${string}`>;
+
 import type { PdfRenderer } from "./pdf.js";
 
 // ---------------------------------------------------------------------------------------------
@@ -138,7 +142,7 @@ export type EventObject =
   | { readonly kind: "invoice_reminder"; readonly invoice: Invoice; readonly reminder: Reminder };
 
 export interface OutgoingEvent {
-  readonly subject: BillingSubject030;
+  readonly subject: BillingSubject;
   readonly aggregate: { readonly type: "invoice" | "subscription"; readonly id: string; readonly version: number };
   readonly scope: Scope;
   readonly object: EventObject;

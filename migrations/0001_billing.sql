@@ -78,7 +78,7 @@ create table subscriptions (
   interval text not null check (interval in ('day','week','month','year')),
   interval_count smallint not null check (interval_count between 1 and 12),
   billing_cycle_anchor timestamptz not null,
-  current_period_index integer not null default 0 check (current_period_index >= 0),  -- n of periodBoundary
+  next_period_index integer not null default 0 check (next_period_index >= 0),  -- n of the period the next renewal invoices (periodBoundary)
   current_period_start timestamptz not null,
   current_period_end timestamptz not null,
   days_until_due smallint not null default 7 check (days_until_due between 0 and 90),

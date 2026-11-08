@@ -15,14 +15,15 @@ import {
   withTx,
 } from "@nearpay-internal/db";
 import { decodeSuffix, encodeUuid, uuidv7 } from "@nearpay-internal/ids";
-import type {
-  BillingStore,
-  BillingTx,
-  EventObject,
-  InvoiceListQuery,
-  ListQuery,
-  OutgoingEvent,
-  Page,
+import {
+  type BillingStore,
+  type BillingTx,
+  CLOCK_JOB_KINDS,
+  type EventObject,
+  type InvoiceListQuery,
+  type ListQuery,
+  type OutgoingEvent,
+  type Page,
 } from "../../app/ports.js";
 import type { Invoice } from "../../domain/invoice/invoice.js";
 import type { InvoiceLine, TaxAmount } from "../../domain/invoice/lines.js";
@@ -267,6 +268,7 @@ const invoiceIn = (r: Sel<InvoicesTable>, lines: InvoiceLine[]): Invoice => ({
   paymentIntentId: optId("pi", r.payment_intent_id),
   paymentIntentIds: r.payment_intent_ids.map((u) => idOf("pi", u)),
   pdfObjectKey: r.pdf_object_key,
+  destinationFingerprint: r.destination_fingerprint,
   uncollectibleReason: r.uncollectible_reason as Invoice["uncollectibleReason"],
   finalizedAt: optUnix(r.finalized_at),
   sentAt: optUnix(r.sent_at),
@@ -317,6 +319,7 @@ const invoiceOut = (i: Invoice) => ({
   payment_intent_id: optUuid(i.paymentIntentId),
   payment_intent_ids: i.paymentIntentIds.map(must),
   pdf_object_key: i.pdfObjectKey,
+  destination_fingerprint: i.destinationFingerprint ?? null,
   uncollectible_reason: i.uncollectibleReason,
   finalized_at: optTs(i.finalizedAt),
   sent_at: optTs(i.sentAt),
@@ -359,6 +362,7 @@ const subscriptionIn = (r: Sel<SubscriptionsTable>, items: Subscription["items"]
   created: unix(r.created_at),
   updated: unix(r.updated_at),
   version: r.version,
+  clockOffset: Number(r.clock_offset_s),
 });
 const subscriptionOut = (s: Subscription) => ({
   id: must(s.id),
@@ -481,12 +485,32 @@ async function itemsOf(tx: Tx, subUuids: string[]): Promise<Map<string, Subscrip
   return out;
 }
 
+/** Non-zero billing clock offsets of these subscriptions (test mode only, lld/billing.md §13). */
+async function clockOffsetsOf(tx: Tx, subUuids: (string | null)[]): Promise<Map<string, number>> {
+  const ids = [...new Set(subUuids.filter((u): u is string => u !== null))];
+  if (ids.length === 0) return new Map();
+  const rows = await tx
+    .selectFrom("subscriptions")
+    .select(["id", "clock_offset_s"])
+    .where("id", "in", ids)
+    .where("clock_offset_s", "<>", "0")
+    .execute();
+  return new Map(rows.map((r) => [r.id, Number(r.clock_offset_s)]));
+}
+
 const invoicesWithLines = async (tx: Tx, rows: Sel<InvoicesTable>[]): Promise<Invoice[]> => {
   const lines = await linesOf(
     tx,
     rows.map((r) => r.id),
   );
-  return rows.map((r) => invoiceIn(r, lines.get(r.id) ?? []));
+  const offsets = await clockOffsetsOf(
+    tx,
+    rows.map((r) => r.subscription_id),
+  );
+  return rows.map((r) => ({
+    ...invoiceIn(r, lines.get(r.id) ?? []),
+    clockOffset: r.subscription_id ? (offsets.get(r.subscription_id) ?? 0) : 0,
+  }));
 };
 
 const subsWithItems = async (tx: Tx, rows: Sel<SubscriptionsTable>[]): Promise<Subscription[]> => {
@@ -697,6 +721,18 @@ function txAdapter(tx: Tx, render: EventRenderer): BillingTx {
           .executeTakeFirst();
         return r ? (await invoicesWithLines(tx, [r]))[0] : undefined;
       },
+      async openDueDates(scope, subscriptionId) {
+        const rows = await tx
+          .selectFrom("invoices")
+          .select("due_date")
+          .where("account_id", "=", scope.accountId)
+          .where("livemode", "=", scope.livemode)
+          .where("subscription_id", "=", must(subscriptionId))
+          .where("status", "=", "open")
+          .where("due_date", "is not", null)
+          .execute();
+        return rows.flatMap((r) => (r.due_date ? [unix(r.due_date)] : []));
+      },
       async countOverdueOpen(scope, subscriptionId, exceptId) {
         const r = await tx
           .selectFrom("invoices")
@@ -751,6 +787,21 @@ function txAdapter(tx: Tx, render: EventRenderer): BillingTx {
           await tx.deleteFrom("subscription_items").where("subscription_id", "=", id).execute();
           await writeItems(tx, id, next.items);
         }
+      },
+      async advanceClock(prev, delta) {
+        if (!Number.isSafeInteger(delta) || delta <= 0) throw new RangeError(`clock advance must be > 0 (${delta})`);
+        if (prev.livemode) throw new RangeError(`subscription ${prev.id}: the billing clock is test mode only`);
+        const from = prev.clockOffset ?? 0;
+        const r = await tx
+          .updateTable("subscriptions")
+          .set({ clock_offset_s: sql<string>`clock_offset_s + ${delta}` })
+          .where("id", "=", must(prev.id))
+          .where("account_id", "=", prev.accountId)
+          .where("livemode", "=", false)
+          .where("clock_offset_s", "=", String(from))
+          .executeTakeFirst();
+        if (Number(r.numUpdatedRows) !== 1) throw concurrent("subscription", prev.id);
+        return { ...prev, clockOffset: from + delta };
       },
       async list(scope, q) {
         const customer = q.customer === undefined ? undefined : uuidOf(q.customer);
@@ -818,9 +869,32 @@ function txAdapter(tx: Tx, render: EventRenderer): BillingTx {
       await enqueueJob(tx, {
         kind: j.kind,
         payload: { ...j.payload, at: j.runAt },
-        runAt: ts(j.runAt),
+        runAt: ts(j.runAt - (j.clockOffset ?? 0)),
         dedupeKey: j.dedupeKey,
       });
+    },
+    async shiftClockJobs(scope, subscriptionId, delta, now) {
+      if (!Number.isSafeInteger(delta) || delta <= 0) throw new RangeError(`clock shift must be > 0 (${delta})`);
+      const invoiceIds = (
+        await tx
+          .selectFrom("invoices")
+          .select("id")
+          .where("account_id", "=", scope.accountId)
+          .where("livemode", "=", scope.livemode)
+          .where("subscription_id", "=", must(subscriptionId))
+          .where("status", "in", ["open", "uncollectible"])
+          .execute()
+      ).map((r) => idOf("in", r.id));
+      const r = await sql`
+        update jobs set run_at = run_at - make_interval(secs => ${delta})
+        where done_at is null and run_at > ${ts(now)}
+          and kind = any(${[...CLOCK_JOB_KINDS]}::text[])
+          and payload->>'account_id' = ${scope.accountId}
+          and payload->>'livemode' = ${String(scope.livemode)}
+          and (payload->>'subscription' = ${subscriptionId} or payload->>'invoice' = any(${invoiceIds}::text[]))`.execute(
+        tx,
+      );
+      return Number(r.numAffectedRows ?? 0n);
     },
     consume: (eventId, subject) => consume(tx, eventId, subject),
     async hit(key, windowSeconds, now) {

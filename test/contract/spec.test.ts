@@ -13,6 +13,7 @@ import {
   PUBLIC_ROUTES,
   PublicInvoice,
   Subscription,
+  SubscriptionClockAdvance,
   TaxRate,
 } from "@nearpay/spec";
 import { unhandledSubjects } from "@nearpay-internal/bus";
@@ -27,6 +28,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { billingRoutes } from "../../src/api/routes.js";
 import {
+  clockAdvanceView,
   eventRenderer,
   invoiceNotificationView,
   invoicePaymentSessionView,
@@ -63,7 +65,7 @@ describe("routes and events", () => {
         .map((r) => r.id)
         .sort(),
     );
-    expect(bindings).toHaveLength(32);
+    expect(bindings).toHaveLength(33);
   });
 
   it("handles every subject the catalogue routes to billing", () => {
@@ -177,7 +179,11 @@ describe("objects parse with the spec schemas", () => {
         clientSecret: `cs_${"0".repeat(26)}_secret_${"a".repeat(32)}`,
       }),
     );
-    InvoiceNotificationContext.parse(invoiceNotificationView(await invoiceNotificationContext(b, open.id, 2)));
+    const nctx = InvoiceNotificationContext.parse(
+      invoiceNotificationView(await invoiceNotificationContext(b, open.id, 2)),
+    );
+    // spec 0.3.1 optional fields are always filled (fingerprint null until a paying intent names one)
+    expect(nctx).toMatchObject({ subtotal: 4003, tax: v.tax, line_count: 2, destination_fingerprint: null });
 
     const s = await subs.createSubscription(b, c, {
       customerId: cus,
@@ -186,6 +192,15 @@ describe("objects parse with the spec schemas", () => {
     const prices = await b.store.transaction((tx) => tx.prices.getMany(s, [monthly.id]));
     expect(Subscription.parse(subscriptionView(s, prices)).items[0]?.price.id).toBe(monthly.id);
     SubscriptionNotificationContext.parse(subscriptionNotificationView(await subscriptionNotificationContext(b, s.id)));
+
+    // test-mode clock helper response (spec 0.3.1)
+    const adv = await subs.advanceSubscriptionClock(b, c, s.id, "overdue");
+    expect(SubscriptionClockAdvance.parse(clockAdvanceView(adv))).toMatchObject({
+      object: "subscription_clock_advance",
+      subscription: s.id,
+      target: "overdue",
+      advanced_by: 7 * 86_400,
+    });
 
     // reminders and renewal events through the jobs
     b.clock.ms = (s.currentPeriodEnd + 30 * 86_400) * 1000;

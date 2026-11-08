@@ -93,6 +93,11 @@ export interface Subscription extends Scope, Pricing {
   readonly created: number;
   readonly updated: number;
   readonly version: number;
+  /**
+   * Test-mode billing clock offset in seconds (clock = now + offset; 0/absent in live mode, forward-only).
+   * Every date of the subscription and its invoices is on this clock (lld/billing.md §13).
+   */
+  readonly clockOffset?: number | undefined;
 }
 
 export const boundary = (s: Pick<Subscription, "anchor" | "recurring">, n: number): number =>
@@ -236,6 +241,7 @@ export function newSubscription(scope: Scope, id: string, now: number, input: Su
     created: now,
     updated: now,
     version: 0,
+    clockOffset: 0,
   } as const;
   if (trial !== undefined) {
     const trialEnd = now + trial * DAY;
@@ -341,6 +347,35 @@ export function renewalUpcomingApplies(s: Subscription, periodEnd: number): bool
     !s.cancelAtPeriodEnd &&
     (s.status === "active" || s.status === "past_due" || s.status === "trialing")
   );
+}
+
+/** Targets of the test-mode billing clock helper (spec `SubscriptionClockTarget`, lld/billing.md §13). */
+export type ClockTarget = "renewal_upcoming" | "renewal" | "overdue";
+
+/** The subscription's billing clock: real time + its (test-mode only) offset. */
+export const clockOf = (s: { readonly clockOffset?: number | undefined }, now: number): number =>
+  now + (s.clockOffset ?? 0);
+
+/**
+ * Clock time of `target` (§13 d3): `renewal_upcoming` = `current_period_end − 3 d`, `renewal` =
+ * `current_period_end` (= `trial_end` while trialing) — both only for `trialing`/`active`/`past_due`;
+ * `overdue` = the earliest of `openDueDates` (due dates of the subscription's open invoices) after
+ * `clock`. Null when there is none strictly ahead of `clock` (the caller answers `state_conflict`).
+ */
+export function clockTargetTime(
+  s: Subscription,
+  target: ClockTarget,
+  clock: number,
+  openDueDates: readonly number[],
+): number | null {
+  let at: number | null;
+  if (target === "overdue") {
+    const ahead = openDueDates.filter((d) => d > clock);
+    at = ahead.length ? Math.min(...ahead) : null;
+  } else if (s.status === "trialing" || s.status === "active" || s.status === "past_due") {
+    at = target === "renewal" ? s.currentPeriodEnd : renewalUpcomingAt(s);
+  } else at = null;
+  return at !== null && at > clock ? at : null;
 }
 
 /** A subscription invoice became overdue: `active → past_due` (others unchanged). */

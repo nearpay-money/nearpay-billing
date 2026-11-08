@@ -6,20 +6,21 @@
  */
 import { createEnvelopeCipher } from "@nearpay-internal/db";
 import type { PdfRenderer } from "../../src/app/pdf.js";
-import type {
-  Billing,
-  BillingStore,
-  BillingTx,
-  CustomerFacts,
-  IdKind,
-  InvoiceListQuery,
-  JobRequest,
-  ListQuery,
-  MerchantFacts,
-  OutgoingEvent,
-  Page,
-  SessionFacts,
-  Transition,
+import {
+  type Billing,
+  type BillingStore,
+  type BillingTx,
+  CLOCK_JOB_KINDS,
+  type CustomerFacts,
+  type IdKind,
+  type InvoiceListQuery,
+  type JobRequest,
+  type ListQuery,
+  type MerchantFacts,
+  type OutgoingEvent,
+  type Page,
+  type SessionFacts,
+  type Transition,
 } from "../../src/app/ports.js";
 import type { Invoice } from "../../src/domain/invoice/invoice.js";
 import type { Price } from "../../src/domain/price/price.js";
@@ -123,7 +124,14 @@ function repo<T extends Row>(m: Map<string, T>, name: string) {
 }
 
 function txOf(s: MemoryState): BillingTx {
-  const invoices = repo(s.invoices, "invoice");
+  const base = repo(s.invoices, "invoice");
+  /** Like the Postgres adapter: an invoice carries its subscription's clock offset (read-only). */
+  const withClock = (i: Invoice | undefined): Invoice | undefined =>
+    i && { ...i, clockOffset: i.subscriptionId ? (s.subscriptions.get(i.subscriptionId)?.clockOffset ?? 0) : 0 };
+  const invoices = {
+    ...base,
+    get: async (scope: Scope, id: string) => withClock(await base.get(scope, id)),
+  };
   const subscriptions = repo(s.subscriptions, "subscription");
   const checkInvoiceUniques = (row: Invoice) => {
     for (const o of s.invoices.values()) {
@@ -183,7 +191,7 @@ function txOf(s: MemoryState): BillingTx {
       },
       async getByIdUnscoped(id) {
         const r = s.invoices.get(id);
-        return r ? structuredClone(r) : undefined;
+        return r ? withClock(structuredClone(r)) : undefined;
       },
       async delete(row) {
         const cur = s.invoices.get(row.id);
@@ -206,7 +214,14 @@ function txOf(s: MemoryState): BillingTx {
         const r = [...s.invoices.values()].find(
           (i) => inScope(i, scope) && i.subscriptionId === subscriptionId && i.period?.start === periodStart,
         );
-        return r ? structuredClone(r) : undefined;
+        return r ? withClock(structuredClone(r)) : undefined;
+      },
+      async openDueDates(scope, subscriptionId) {
+        return [...s.invoices.values()].flatMap((i) =>
+          inScope(i, scope) && i.subscriptionId === subscriptionId && i.status === "open" && i.dueDate !== null
+            ? [i.dueDate]
+            : [],
+        );
       },
       async countOverdueOpen(scope, subscriptionId, exceptId) {
         return [...s.invoices.values()].filter(
@@ -224,6 +239,19 @@ function txOf(s: MemoryState): BillingTx {
       async getByIdUnscoped(id) {
         const r = s.subscriptions.get(id);
         return r ? structuredClone(r) : undefined;
+      },
+      async update(prev, next) {
+        // like the adapter: `update` never writes the clock offset
+        const cur = s.subscriptions.get(prev.id);
+        await subscriptions.update(prev, { ...next, clockOffset: cur?.clockOffset ?? 0 });
+      },
+      async advanceClock(prev, delta) {
+        const cur = s.subscriptions.get(prev.id);
+        if (!cur || prev.livemode || delta <= 0 || (cur.clockOffset ?? 0) !== (prev.clockOffset ?? 0))
+          throw new Error(`subscription ${prev.id}: clock advance refused`);
+        const next = { ...cur, clockOffset: (cur.clockOffset ?? 0) + delta };
+        s.subscriptions.set(prev.id, structuredClone(next));
+        return { ...prev, clockOffset: next.clockOffset };
       },
       list: async (scope, q) =>
         page(
@@ -252,8 +280,36 @@ function txOf(s: MemoryState): BillingTx {
     },
     async enqueue(j) {
       if (!j.dedupeKey.startsWith(`${j.kind}:`)) throw new Error("dedupe key must start with the kind");
+      // like the adapter: stored `runAt` is real time (clock time − offset), `at` stays on the clock
       if (!s.jobs.has(j.dedupeKey))
-        s.jobs.set(j.dedupeKey, { ...structuredClone(j), payload: { ...j.payload, at: j.runAt }, done: false });
+        s.jobs.set(j.dedupeKey, {
+          ...structuredClone(j),
+          runAt: j.runAt - (j.clockOffset ?? 0),
+          payload: { ...j.payload, at: j.runAt },
+          done: false,
+        });
+    },
+    async shiftClockJobs(scope, subscriptionId, delta, now) {
+      const invoiceIds = new Set(
+        [...s.invoices.values()]
+          .filter(
+            (i) =>
+              inScope(i, scope) &&
+              i.subscriptionId === subscriptionId &&
+              (i.status === "open" || i.status === "uncollectible"),
+          )
+          .map((i) => i.id),
+      );
+      let n = 0;
+      for (const [k, j] of s.jobs) {
+        const p = j.payload;
+        if (j.done || j.runAt <= now || !(CLOCK_JOB_KINDS as readonly string[]).includes(j.kind)) continue;
+        if (p.account_id !== scope.accountId || p.livemode !== scope.livemode) continue;
+        if (p.subscription !== subscriptionId && !invoiceIds.has(String(p.invoice))) continue;
+        s.jobs.set(k, { ...j, runAt: j.runAt - delta });
+        n++;
+      }
+      return n;
     },
     async consume(eventId) {
       if (s.inbox.has(eventId)) return false;

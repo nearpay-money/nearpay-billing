@@ -1,11 +1,12 @@
 /**
- * Spec route bindings (lld/billing.md §5; spec 0.3.0). Authentication, scopes, roles and automatic
+ * Spec route bindings (lld/billing.md §5, §13; spec 0.3.1). Authentication, scopes, roles and automatic
  * idempotency (merchant POSTs with `Idempotency-Key`) are enforced from the spec by the service bootstrap;
  * the hosted-invoice routes check the invoice secret in the use cases. Domain errors become the public
  * error envelope with the same code.
  */
 import { isIP } from "node:net";
 import {
+  advanceSubscriptionClock,
   cancelSubscription,
   createInvoice,
   createPrice,
@@ -53,6 +54,7 @@ import type { LineInput } from "../domain/invoice/lines.js";
 import { DomainError } from "../domain/shared.js";
 import type { Subscription } from "../domain/subscription/subscription.js";
 import {
+  clockAdvanceView,
   invoiceNotificationView,
   invoicePaymentSessionView,
   invoiceView,
@@ -87,45 +89,17 @@ export function toApiError(e: DomainError): ApiError {
   });
 }
 
-async function run<T>(f: () => Promise<T>, map: (e: DomainError) => DomainError = (e) => e): Promise<T> {
+/**
+ * Runs a use case; domain errors become the public envelope with the same code (spec 0.3.1 lists every
+ * code billing answers, so the interim mappings of LLD §12 d18 are gone).
+ */
+async function run<T>(f: () => Promise<T>): Promise<T> {
   try {
     return await f();
   } catch (e) {
-    if (e instanceof DomainError) throw toApiError(map(e));
+    if (e instanceof DomainError) throw toApiError(e);
     throw e;
   }
-}
-
-/**
- * `createSubscription` cannot answer `invoice_empty` until spec 0.3.1 (lead decision 2026-11-08): a
- * zero-total first invoice is refused as `invalid_request` on `items`.
- */
-const subscriptionCreateErrors = (e: DomainError): DomainError =>
-  e.code === "invoice_empty"
-    ? new DomainError(
-        "invalid_request",
-        { detail: "the first invoice of a subscription must have a total above zero" },
-        "items",
-      )
-    : e;
-
-/**
- * Pass-through refusals of payments' `createInvoiceCheckoutSession` that `createPublicInvoiceSession` does
- * not list until spec 0.3.1 (lead decision 2026-11-08): amount and customer refusals → `invoice_not_payable`
- * (with the reason as status), a concurrent open race → `rate_limited` (retry in 1 s).
- */
-export function publicSessionErrors(invoiceId: string) {
-  return (e: DomainError): DomainError => {
-    const reasons: Partial<Record<string, string>> = {
-      amount_below_destination_minimum: "below the destination minimum",
-      amount_above_unverified_cap: "above the unverified destination cap",
-      customer_deleted: "billed to a deleted customer",
-    };
-    const reason = reasons[e.code];
-    if (reason) return new DomainError("invoice_not_payable", { invoice: invoiceId, status: reason });
-    if (e.code === "state_conflict") return new DomainError("rate_limited", { retry_after: 1 });
-    return e;
-  };
 }
 
 const listQuery = (q: {
@@ -192,15 +166,9 @@ const pdfHeaders = (inv: Invoice) => ({
   "cache-control": "private, no-store",
 });
 
-/** Sends raw PDF bytes (spec `binaryResponse`; kit 0.2.1 serialises JSON only, so the reply is written here). */
-function sendPdf(ctx: RequestContext, r: { invoice: Invoice; pdf: Uint8Array }): undefined {
-  void ctx.reply
-    .code(200)
-    .headers({ ...pdfHeaders(r.invoice), "x-request-id": ctx.requestId })
-    .type("application/pdf")
-    .send(Buffer.from(r.pdf));
-  return undefined;
-}
+/** Raw PDF bytes (spec `binaryResponse`; kit ≥ 0.3.1 sends them with status, request id and length). */
+const sendPdf = (ctx: RequestContext, r: { invoice: Invoice; pdf: Uint8Array }) =>
+  ctx.binary(r.pdf, "application/pdf", pdfHeaders(r.invoice));
 
 // ---------------------------------------------------------------------------------------------
 // Bindings
@@ -410,13 +378,11 @@ export function billingRoutes(b: Billing, env: string): RouteBinding[] {
       publicInvoiceView(await run(() => hosted.getPublicInvoice(b, ctx.params.id, secretOf(ctx)))),
     ),
     implement(createPublicInvoiceSession, async (ctx) => {
-      const s = await run(
-        () =>
-          hosted.createPublicInvoiceSession(b, ctx.params.id, secretOf(ctx), {
-            locale: ctx.body.locale,
-            clientNetwork: clientNetwork(env, header(ctx, "cf-connecting-ip"), header(ctx, "x-forwarded-for")),
-          }),
-        publicSessionErrors(ctx.params.id),
+      const s = await run(() =>
+        hosted.createPublicInvoiceSession(b, ctx.params.id, secretOf(ctx), {
+          locale: ctx.body.locale,
+          clientNetwork: clientNetwork(env, header(ctx, "cf-connecting-ip"), header(ctx, "x-forwarded-for")),
+        }),
       );
       return invoicePaymentSessionView(s);
     }),
@@ -427,22 +393,20 @@ export function billingRoutes(b: Billing, env: string): RouteBinding[] {
     // ---- subscriptions
     implement(createSubscription, async (ctx) => {
       const body = ctx.body;
-      const s = await run(
-        () =>
-          subs.createSubscription(b, merchant(ctx), {
-            customerId: body.customer,
-            items: body.items.map((i) => ({ priceId: i.price, quantity: i.quantity, taxRateIds: i.tax_rates })),
-            daysUntilDue: body.days_until_due,
-            trialPeriodDays: body.trial_period_days,
-            defaultTaxRateIds: body.default_tax_rates,
-            dunning: body.dunning
-              ? { reminderDays: body.dunning.reminder_days, onExhausted: body.dunning.on_exhausted }
-              : undefined,
-            description: body.description,
-            settlementDestinationId: body.settlement_destination,
-            metadata: body.metadata,
-          }),
-        subscriptionCreateErrors,
+      const s = await run(() =>
+        subs.createSubscription(b, merchant(ctx), {
+          customerId: body.customer,
+          items: body.items.map((i) => ({ priceId: i.price, quantity: i.quantity, taxRateIds: i.tax_rates })),
+          daysUntilDue: body.days_until_due,
+          trialPeriodDays: body.trial_period_days,
+          defaultTaxRateIds: body.default_tax_rates,
+          dunning: body.dunning
+            ? { reminderDays: body.dunning.reminder_days, onExhausted: body.dunning.on_exhausted }
+            : undefined,
+          description: body.description,
+          settlementDestinationId: body.settlement_destination,
+          metadata: body.metadata,
+        }),
       );
       return respond(201, await subView(s));
     }),
@@ -482,6 +446,13 @@ export function billingRoutes(b: Billing, env: string): RouteBinding[] {
     implement(cancelSubscription, async (ctx) =>
       subView(
         await run(() => subs.cancelSubscription(b, merchant(ctx), ctx.params.id, ctx.body.at_period_end ?? false)),
+      ),
+    ),
+
+    // ---- test helper (test mode only; lld/billing.md §13)
+    implement(advanceSubscriptionClock, async (ctx) =>
+      clockAdvanceView(
+        await run(() => subs.advanceSubscriptionClock(b, merchant(ctx), ctx.params.id, ctx.body.target)),
       ),
     ),
 

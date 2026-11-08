@@ -9,7 +9,7 @@ import { scheduleOf } from "../domain/dunning/dunning.js";
 import { amountRemaining, type Invoice, isPayable } from "../domain/invoice/invoice.js";
 import { DAY, DomainError, missing } from "../domain/shared.js";
 import { saveInvoice } from "./commit.js";
-import { billToOf, clientSecretAad, nowS, secretHash } from "./invoices.js";
+import { billToOf, clientSecretAad, clockS, nowS, secretHash } from "./invoices.js";
 import type { AssetFacts, Billing, MerchantFacts } from "./ports.js";
 
 /** The invoice behind a hosted-page request: finalized (drafts look missing) and the secret matches. */
@@ -62,11 +62,14 @@ export interface InvoicePaymentSessionData {
 
 /**
  * When the session stops taking new payments: the earlier of now + 30 days and the last reminder, but at
- * least an hour ahead (payments accepts 5 min – 30 d; uncollectible invoices stay payable).
+ * least an hour ahead (payments accepts 5 min – 30 d; uncollectible invoices stay payable). `now` is real
+ * time: sessions expire in real time, so the last reminder (on the invoice's billing clock) is translated
+ * back by the clock offset (lld/billing.md §13 d2).
  */
 export function sessionExpiry(inv: Invoice, now: number): number {
   const s = scheduleOf(inv);
-  const last = s[s.length - 1]?.at ?? now + 30 * DAY;
+  const lastAt = s[s.length - 1]?.at;
+  const last = lastAt === undefined ? now + 30 * DAY : lastAt - (inv.clockOffset ?? 0);
   return Math.max(now + 3600, Math.min(now + 30 * DAY, last));
 }
 
@@ -145,7 +148,7 @@ export async function createPublicInvoiceSession(
       await saveInvoice(
         tx,
         cur,
-        { ...cur, session, sessionsCreated: n, updated: now },
+        { ...cur, session, sessionsCreated: n, updated: clockS(b, cur) },
         { actor: "customer", cause: "session opened" },
       );
       return { checkoutSession: session.id, clientSecret: r.clientSecret, expiresAt: session.expiresAt, reused: false };

@@ -10,6 +10,7 @@ import type {
   Price as PriceObj,
   Product as ProductObj,
   PublicInvoice,
+  SubscriptionClockAdvance,
   Subscription as SubscriptionObj,
   TaxRate as TaxRateObj,
   z,
@@ -24,6 +25,7 @@ import type {
 import type { InvoicePaymentSessionData, PublicInvoiceData } from "../app/hosted.js";
 import type { InvoiceNotificationData, SubscriptionNotificationData } from "../app/notification.js";
 import type { EventObject } from "../app/ports.js";
+import type { ClockAdvance } from "../app/subscriptions.js";
 import type { Reminder } from "../domain/dunning/dunning.js";
 import { nextReminder } from "../domain/dunning/dunning.js";
 import type { Invoice } from "../domain/invoice/invoice.js";
@@ -338,6 +340,10 @@ export function invoiceNotificationView(d: InvoiceNotificationData): z.infer<typ
     asset_id: asset(inv.assetId),
     pricing_asset: display(d.pricingAsset),
     total: amount(inv, inv.total),
+    subtotal: amount(inv, inv.subtotal),
+    tax: amount(inv, inv.tax),
+    line_count: inv.lines.length,
+    destination_fingerprint: inv.destinationFingerprint ?? null,
     amount_due: amount(inv, inv.total),
     amount_remaining: amount(inv, d.amountRemaining),
     due_date: optIso(inv.dueDate),
@@ -376,5 +382,16 @@ export function subscriptionNotificationView(
     next_amount: amount(s, d.nextAmount),
     items: d.items.map((i) => ({ description: i.description, quantity: i.quantity })),
     cancel_at_period_end: s.cancelAtPeriodEnd,
+  };
+}
+
+/** `advanceSubscriptionClock` response (spec 0.3.1, lld/billing.md §13). */
+export function clockAdvanceView(a: ClockAdvance): z.infer<typeof SubscriptionClockAdvance> {
+  return {
+    object: "subscription_clock_advance",
+    subscription: pid<"sub">(a.subscription.id),
+    target: a.target,
+    clock_time: a.clockTime,
+    advanced_by: a.advancedBy,
   };
 }

@@ -69,6 +69,21 @@ export function reminderToSend(
   return { reminder: next, invoice: { ...inv, remindersSent: inv.remindersSent + 1, updated: now } };
 }
 
+/**
+ * Reminder `number` is due but an earlier reminder that is also due has not gone out yet: its job has not
+ * run (jobs that became due together, e.g. after a test-clock advance, may run concurrently). The caller
+ * retries later instead of skipping, so reminders still go out in order and none is lost (§13).
+ */
+export function reminderWaitsForEarlier(inv: Invoice, number: number, now: number): boolean {
+  const unpaid =
+    inv.status === "open" || (inv.status === "uncollectible" && inv.uncollectibleReason === "dunning_exhausted");
+  if (!unpaid) return false;
+  const s = scheduleOf(inv);
+  const next = s[inv.remindersSent];
+  const mine = s.find((r) => r.number === number);
+  return next !== undefined && mine !== undefined && next.number < number && now >= mine.at;
+}
+
 /** At the due date: an `open` invoice becomes overdue once (`invoice.overdue`). */
 export function markOverdue(inv: Invoice, now: number): Invoice | null {
   if (inv.status !== "open" || inv.overdueAt !== null || inv.dueDate === null || now < inv.dueDate) return null;

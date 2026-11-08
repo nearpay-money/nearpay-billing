@@ -102,6 +102,8 @@ export interface InvoiceRepo {
   bySubscriptionPeriod(scope: Scope, subscriptionId: string, periodStart: number): Promise<Invoice | undefined>;
   /** Open invoices of the subscription that are overdue, other than `exceptId`. */
   countOverdueOpen(scope: Scope, subscriptionId: string, exceptId: string): Promise<number>;
+  /** Due dates (subscription clock) of the subscription's open invoices that have one (§13 `overdue`). */
+  openDueDates(scope: Scope, subscriptionId: string): Promise<number[]>;
 }
 
 export interface SubscriptionRepo {
@@ -110,6 +112,12 @@ export interface SubscriptionRepo {
   getByIdUnscoped(id: string): Promise<Subscription | undefined>;
   insert(row: Subscription): Promise<void>;
   update(prev: Subscription, next: Subscription): Promise<void>;
+  /**
+   * Test-mode clock advance (§13): `clock_offset_s += delta` (delta > 0) on the locked row, guarded by the
+   * offset `prev` was read with. The offset is never written by `update` (forward-only, test mode only by
+   * check constraint). Returns the subscription with the new offset.
+   */
+  advanceClock(prev: Subscription, delta: number): Promise<Subscription>;
   list(
     scope: Scope,
     q: ListQuery & {
@@ -171,9 +179,24 @@ export interface JobRequest {
   readonly kind: JobKind;
   /** Must start with `<kind>:`; an existing job with the key wins. */
   readonly dedupeKey: string;
+  /** On the clock of the job's subscription (real time when `clockOffset` is 0/absent). */
   readonly runAt: number;
+  /**
+   * The subscription's billing clock offset (§13): the job is stored to run at real time
+   * `runAt − clockOffset`, with `at = runAt` (clock time) in the payload.
+   */
+  readonly clockOffset?: number | undefined;
   readonly payload: Readonly<Record<string, string | number | boolean>>;
 }
+
+/** Which pending jobs follow a subscription's billing clock (§13 d2). */
+export const CLOCK_JOB_KINDS = [
+  "subscription.renew",
+  "subscription.renewal_upcoming",
+  "invoice.remind",
+  "invoice.overdue",
+  "invoice.dunning_exhausted",
+] as const satisfies readonly JobKind[];
 
 export interface BillingTx {
   readonly products: ProductRepo;
@@ -186,6 +209,13 @@ export interface BillingTx {
   /** Outbox row in this transaction (kit `emit`). */
   emit(e: OutgoingEvent): Promise<void>;
   enqueue(j: JobRequest): Promise<void>;
+  /**
+   * §13 d4: every pending clock job (`CLOCK_JOB_KINDS`) of the subscription and of its open/uncollectible
+   * invoices with `run_at > now` (unix seconds, real time) moves to `run_at − delta`: jobs due at the new
+   * clock time become due at once and keep their relative order (`greatest(now, …)` would tie them).
+   * Returns how many moved.
+   */
+  shiftClockJobs(scope: Scope, subscriptionId: string, delta: number, now: number): Promise<number>;
   /** Inbox dedupe: true when the event is new. */
   consume(eventId: string, subject: string): Promise<boolean>;
   /** Fixed-window counter: the count in the current window after this hit. */

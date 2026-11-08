@@ -315,6 +315,147 @@ describe("postgres store", () => {
     await h["kit.purge"]?.(null);
   });
 
+  it("test clock (§13): offset test-only/forward-only in the database, own jobs shifted, sweep on the clock, one invoice per period", async () => {
+    const { monthly } = await setup();
+    const mk = () =>
+      subs.createSubscription(b, c, {
+        customerId: cus("1"),
+        items: [{ priceId: monthly.id }],
+        dunning: { reminderDays: [-3, 0, 1] },
+      });
+    const s = await mk();
+    const other = await mk();
+    const list = async () => (await inv.listInvoices(b, c, { limit: 50, subscription: s.id })).data.slice().reverse();
+    const first = (await list())[0] as Invoice;
+    await onPaymentIntentSucceeded(b, {
+      eventId: "0190f0c4-0000-7000-8000-0000000000c1",
+      subject: "evt.payments.payment_intent.succeeded",
+      scope: SCOPE,
+      object: {
+        id: "pi_01jbz9k3m4n5p6q7r8s9t0v1c1",
+        status: "succeeded",
+        invoiceId: first.id,
+        ...SCOPE,
+        currency: "usd",
+        assetId: null,
+        amount: first.total,
+        destinationFingerprint: "7KQ2-M9XA-31",
+      },
+    });
+    expect(await inv.getInvoice(b, c, first.id)).toMatchObject({
+      status: "paid",
+      destinationFingerprint: "7KQ2-M9XA-31",
+    });
+    const jobsOf = (id: string) =>
+      db.db
+        .selectFrom("jobs")
+        .select(["dedupe_key", "run_at", "payload"])
+        .where(sql<boolean>`payload->>'subscription' = ${id} or payload->>'invoice' = ${id}`)
+        .orderBy("dedupe_key")
+        .execute();
+    const events = async (aggregateId: string) =>
+      (
+        await db.db
+          .selectFrom("outbox")
+          .select("subject")
+          .where("aggregate_id", "=", toUuid(aggregateId))
+          .orderBy("aggregate_version")
+          .execute()
+      ).map((e) => e.subject);
+    const otherJobs = await jobsOf(other.id);
+    const end = s.currentPeriodEnd;
+
+    // renewal_upcoming: offset stored, the notice job becomes due at once, the renewal keeps its clock time
+    const up = await subs.advanceSubscriptionClock(b, c, s.id, "renewal_upcoming");
+    expect(up).toMatchObject({ clockTime: end - 3 * DAY, advancedBy: end - 3 * DAY - T0 });
+    const row = await db.db
+      .selectFrom("subscriptions")
+      .select("clock_offset_s")
+      .where("id", "=", toUuid(s.id))
+      .executeTakeFirstOrThrow();
+    expect(Number(row.clock_offset_s)).toBe(up.advancedBy);
+    const mine = await jobsOf(s.id);
+    const renewJob = mine.find((j) => j.dedupe_key === `subscription.renew:${s.id}:${end}`);
+    const upJob = mine.find((j) => j.dedupe_key === `subscription.renewal_upcoming:${s.id}:${end}`);
+    expect(renewJob?.run_at.getTime()).toBe((end - up.advancedBy) * 1000);
+    expect(renewJob?.payload).toMatchObject({ at: end });
+    expect(upJob?.run_at.getTime()).toBe(T0 * 1000);
+    expect(await jobsOf(other.id)).toEqual(otherJobs);
+    expect(await code(subs.getSubscription(b, { ...c, scope: OTHER }, s.id))).toBe("resource_missing");
+    expect(await code(subs.advanceSubscriptionClock(b, { ...c, scope: OTHER }, s.id, "renewal"))).toBe(
+      "resource_missing",
+    );
+    await runJobs();
+    expect(await events(s.id)).toContain("evt.billing.subscription.renewal_upcoming");
+
+    // renewal: the shifted job and the sweep (on the subscription's clock) invoice the period once
+    await subs.advanceSubscriptionClock(b, c, s.id, "renewal");
+    const h = recurringHandlers(db.db);
+    await h["subscription.sweep"]?.(null);
+    const sweep = (await jobsOf(s.id)).find((j) => j.dedupe_key === `subscription.renew:${s.id}:${end}:sweep`);
+    expect(sweep).toBeDefined();
+    await runJobs();
+    await jobHandlers(b)["subscription.renew"](sweep?.payload);
+    const after = await list();
+    expect(after.map((i) => i.period?.start)).toEqual([T0, end]);
+    const renewal = after[1] as Invoice;
+    expect(renewal).toMatchObject({
+      billingReason: "subscription_cycle",
+      status: "open",
+      finalizedAt: end,
+      dueDate: end + 7 * DAY,
+      clockOffset: end - T0,
+    });
+    expect(await events(renewal.id)).toEqual([
+      "evt.billing.invoice.created",
+      "evt.billing.invoice.finalized",
+      "evt.billing.invoice.sent",
+    ]);
+
+    // overdue: reminders 1 and 2 (in order), then overdue; the subscription goes past_due
+    const o = await subs.advanceSubscriptionClock(b, c, s.id, "overdue");
+    expect(o.clockTime).toBe(end + 7 * DAY);
+    await runJobs();
+    expect(await events(renewal.id)).toEqual([
+      "evt.billing.invoice.created",
+      "evt.billing.invoice.finalized",
+      "evt.billing.invoice.sent",
+      "evt.billing.invoice.reminder",
+      "evt.billing.invoice.reminder",
+      "evt.billing.invoice.overdue",
+    ]);
+    expect(await inv.getInvoice(b, c, renewal.id)).toMatchObject({ remindersSent: 2, overdueAt: end + 7 * DAY });
+    expect((await subs.getSubscription(b, c, s.id)).status).toBe("past_due");
+    expect(await code(subs.advanceSubscriptionClock(b, c, s.id, "overdue"))).toBe("state_conflict");
+
+    // the database refuses a backward or live clock
+    await expect(
+      db.db.updateTable("subscriptions").set({ clock_offset_s: "0" }).where("id", "=", toUuid(s.id)).execute(),
+    ).rejects.toThrow(/cannot move back/);
+    await expect(
+      db.db.updateTable("subscriptions").set({ livemode: true }).where("id", "=", toUuid(s.id)).execute(),
+    ).rejects.toThrow(/subs_clock_test_only/);
+    await expect(
+      b.store.transaction(async (tx) => {
+        const cur = (await tx.subscriptions.get(SCOPE, s.id, { lock: true })) as NonNullable<
+          Awaited<ReturnType<typeof tx.subscriptions.get>>
+        >;
+        await tx.subscriptions.advanceClock({ ...cur, livemode: true }, 60);
+      }),
+    ).rejects.toThrow(/test mode only/);
+    await expect(
+      b.store.transaction(async (tx) => {
+        const cur = (await tx.subscriptions.get(SCOPE, s.id)) as NonNullable<
+          Awaited<ReturnType<typeof tx.subscriptions.get>>
+        >;
+        await tx.subscriptions.advanceClock({ ...cur, clockOffset: 0 }, 60);
+      }),
+    ).rejects.toThrow(/changed concurrently/);
+    // a regular update never touches the offset
+    const cur = await subs.updateSubscription(b, c, s.id, { description: "x" });
+    expect(cur.clockOffset).toBe(o.subscription.clockOffset);
+  });
+
   it("rate counters count per fixed window", async () => {
     const hit = (now: number) => b.store.transaction((tx) => tx.hit("k", 60, now));
     expect(await hit(T0)).toBe(1);

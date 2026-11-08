@@ -37,11 +37,19 @@ import {
   type Scope,
   stateConflict,
 } from "../domain/shared.js";
+import { clockOf } from "../domain/subscription/subscription.js";
 import { assertPricingSupported } from "./catalog.js";
 import { type Ctx, type Meta, saveInvoice } from "./commit.js";
 import type { Billing, BillingTx, CustomerFacts, InvoiceListQuery, MerchantFacts, Page } from "./ports.js";
 
 export const nowS = (b: Billing): number => Math.floor(b.now() / 1000);
+
+/**
+ * The billing clock of a subscription or of a subscription invoice: real time + the subscription's
+ * test-mode offset (lld/billing.md §13). Every date and decision of a subscription and its invoices uses it;
+ * manual invoices and live mode have offset 0. Event envelopes, sessions, rate counters stay on real time.
+ */
+export const clockS = (b: Billing, x: { readonly clockOffset?: number | undefined }): number => clockOf(x, nowS(b));
 
 // ---------------------------------------------------------------------------------------------
 // Shared helpers
@@ -164,21 +172,30 @@ export function billToOf(b: Billing, inv: Invoice): { name: string | null; email
 /** Reminder, overdue, exhaustion and PDF jobs of a freshly finalized invoice (deduped by key). */
 export async function scheduleInvoiceJobs(tx: BillingTx, inv: Invoice): Promise<void> {
   const payload = { invoice: inv.id, account_id: inv.accountId, livemode: inv.livemode };
+  const clockOffset = inv.clockOffset ?? 0;
   for (const r of scheduleOf(inv))
     await tx.enqueue({
       kind: "invoice.remind",
       dedupeKey: `invoice.remind:${inv.id}:r${r.number}`,
       runAt: r.at,
+      clockOffset,
       payload: { ...payload, number: r.number },
     });
   if (inv.dueDate !== null)
-    await tx.enqueue({ kind: "invoice.overdue", dedupeKey: `invoice.overdue:${inv.id}`, runAt: inv.dueDate, payload });
+    await tx.enqueue({
+      kind: "invoice.overdue",
+      dedupeKey: `invoice.overdue:${inv.id}`,
+      runAt: inv.dueDate,
+      clockOffset,
+      payload,
+    });
   const ex = exhaustAt(inv);
   if (inv.subscriptionId !== null && ex !== null)
     await tx.enqueue({
       kind: "invoice.dunning_exhausted",
       dedupeKey: `invoice.dunning_exhausted:${inv.id}`,
       runAt: ex,
+      clockOffset,
       payload,
     });
   await renderPdfLater(tx, inv);
@@ -190,7 +207,9 @@ export async function renderPdfLater(tx: BillingTx, inv: Invoice): Promise<void>
   await tx.enqueue({
     kind: "invoice.render_pdf",
     dedupeKey: `invoice.render_pdf:${inv.id}:${inv.status}`,
+    // `updated` is on the invoice's clock; rendering itself runs in real time (now)
     runAt: inv.updated,
+    clockOffset: inv.clockOffset ?? 0,
     payload: { invoice: inv.id, account_id: inv.accountId, livemode: inv.livemode },
   });
 }
@@ -206,7 +225,7 @@ export async function finalizeInTx(
   cur: Invoice,
   o: { readonly merchant: MerchantFacts; readonly customer: CustomerFacts; readonly meta: Meta },
 ): Promise<Invoice> {
-  const now = nowS(b);
+  const now = clockS(b, cur);
   assertFinalizable(cur, now);
   const manual = cur.subscriptionId === null;
   const drafts = cur.lines.map(toDraft);
@@ -380,7 +399,7 @@ export async function updateInvoice(b: Billing, c: Ctx, id: string, input: Invoi
         requireActive: true,
       });
     }
-    const next = patchInvoice(cur, patch, nowS(b));
+    const next = patchInvoice(cur, patch, clockS(b, cur));
     return saveInvoice(tx, cur, next, { actor: c.actor, cause: "updated" });
   });
 }
@@ -433,7 +452,7 @@ export async function sendInvoice(b: Billing, c: Ctx, id: string): Promise<Invoi
   return b.store.transaction(async (tx) => {
     const cur = await tx.invoices.get(c.scope, id, { lock: true });
     if (!cur) throw missing("invoice", id);
-    return saveInvoice(tx, cur, markSent(cur, nowS(b)), { actor: c.actor, cause: "sent" }, [
+    return saveInvoice(tx, cur, markSent(cur, clockS(b, cur)), { actor: c.actor, cause: "sent" }, [
       "evt.billing.invoice.sent",
     ]);
   });
@@ -455,7 +474,7 @@ export async function voidInvoiceUseCase(b: Billing, c: Ctx, id: string): Promis
     const cur = await tx.invoices.get(c.scope, id, { lock: true });
     if (!cur) throw missing("invoice", id);
     if ((cur.session?.id ?? null) !== (before.session?.id ?? null)) throw new DomainError("attempt_in_flight");
-    const next = voidInvoice(cur, nowS(b), mayStillSettle);
+    const next = voidInvoice(cur, clockS(b, cur), mayStillSettle);
     const saved = await saveInvoice(tx, cur, next, { actor: c.actor, cause: "voided" }, ["evt.billing.invoice.voided"]);
     await renderPdfLater(tx, saved);
     return saved;
@@ -466,7 +485,7 @@ export function markInvoiceUncollectible(b: Billing, c: Ctx, id: string): Promis
   return b.store.transaction(async (tx) => {
     const cur = await tx.invoices.get(c.scope, id, { lock: true });
     if (!cur) throw missing("invoice", id);
-    const next = markUncollectible(cur, nowS(b), "merchant");
+    const next = markUncollectible(cur, clockS(b, cur), "merchant");
     const saved = await saveInvoice(tx, cur, next, { actor: c.actor, cause: "marked uncollectible" }, [
       "evt.billing.invoice.marked_uncollectible",
     ]);

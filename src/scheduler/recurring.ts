@@ -1,7 +1,8 @@
 /**
  * Recurring worker jobs (lld/billing.md §7): kit table retention, and a renewal sweep that re-enqueues the
  * renewal of any subscription whose period ended more than 10 minutes ago without one (belt and braces:
- * renewals are idempotent per subscription × period, so a duplicate does nothing).
+ * renewals are idempotent per subscription × period, so a duplicate does nothing). "Ended" is on the
+ * subscription's billing clock (`now() + clock_offset_s`, lld/billing.md §13; the offset is 0 in live mode).
  */
 import { enqueueJob, type Kysely, purgeKitTables, type RecurringJob, sql } from "@nearpay-internal/db";
 import type { DB } from "../infra/db/schema.js";
@@ -25,7 +26,11 @@ export function recurringHandlers(db: Kysely<DB>): Record<string, (payload: unkn
         .selectFrom("subscriptions")
         .select(["id", "account_id", "livemode", "current_period_end"])
         .where("status", "in", ["active", "past_due", "trialing"])
-        .where("current_period_end", "<", sql<Date>`now() - interval '10 minutes'`)
+        .where(
+          "current_period_end",
+          "<",
+          sql<Date>`now() + make_interval(secs => clock_offset_s) - interval '10 minutes'`,
+        )
         .orderBy("current_period_end")
         .limit(200)
         .execute();

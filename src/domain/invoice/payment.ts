@@ -16,6 +16,8 @@ export interface IntentFacts extends Scope, Pricing {
   readonly invoiceId: string | null;
   /** Amount the intent was priced at (invoice currency units). */
   readonly amount: bigint;
+  /** Fingerprint of the destination snapshot the intent settles to (payments `destination.fingerprint`). */
+  readonly destinationFingerprint?: string | null | undefined;
 }
 
 export type SucceededOutcome =
@@ -43,7 +45,7 @@ export function onIntentSucceeded(inv: Invoice, pi: IntentFacts, now: number): S
   if (!samePricing(pi, inv)) return { kind: "mismatch", invoice: recorded, reason: "pricing differs" };
   if (pi.amount < amountRemaining(inv))
     return { kind: "mismatch", invoice: recorded, reason: `intent amount ${pi.amount} below ${amountRemaining(inv)}` };
-  return { kind: "paid", invoice: markPaid(recorded, now, pi.id) };
+  return { kind: "paid", invoice: markPaid(recorded, now, pi.id, pi.destinationFingerprint ?? null) };
 }
 
 export type FailedOutcome =

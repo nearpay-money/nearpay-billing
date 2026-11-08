@@ -72,6 +72,16 @@ export interface Invoice extends Scope, Pricing, Totals {
   /** Every intent seen for the invoice, newest first (late settlements stay listed, §11 d10). */
   readonly paymentIntentIds: readonly string[];
   readonly pdfObjectKey: string | null;
+  /**
+   * Fingerprint of the settlement destination the paying intent settled to (payments' destination
+   * snapshot), recorded when the invoice is paid; null/absent while unknown (spec 0.3.1).
+   */
+  readonly destinationFingerprint?: string | null | undefined;
+  /**
+   * Billing clock offset (seconds) of the invoice's subscription — read-only, 0/absent for manual
+   * invoices and live mode. Every date of a subscription invoice is on that clock (lld/billing.md §13).
+   */
+  readonly clockOffset?: number | undefined;
   readonly uncollectibleReason: UncollectibleReason | null;
   readonly finalizedAt: number | null;
   readonly sentAt: number | null;
@@ -114,6 +124,8 @@ export interface DraftInput extends Pricing {
   readonly reminderDays?: readonly number[] | undefined;
   readonly settlementDestinationId?: string | null | undefined;
   readonly metadata?: Metadata | undefined;
+  /** The subscription's billing clock offset (subscription invoices only, lld/billing.md §13). */
+  readonly clockOffset?: number | undefined;
 }
 
 export function newDraft(scope: Scope, id: string, now: number, input: DraftInput): Invoice {
@@ -150,6 +162,8 @@ export function newDraft(scope: Scope, id: string, now: number, input: DraftInpu
     paymentIntentId: null,
     paymentIntentIds: [],
     pdfObjectKey: null,
+    destinationFingerprint: null,
+    clockOffset: input.clockOffset ?? 0,
     uncollectibleReason: null,
     finalizedAt: null,
     sentAt: null,
@@ -279,10 +293,16 @@ export const isPayable = (inv: Invoice): boolean => inv.status === "open" || inv
 export const amountRemaining = (inv: Invoice): bigint => inv.total - inv.amountPaid;
 
 /** `open | uncollectible → paid` after a succeeded intent of payments (only `./payment.ts` calls it). */
-export function markPaid(inv: Invoice, now: number, intentId: string): Invoice {
+export function markPaid(
+  inv: Invoice,
+  now: number,
+  intentId: string,
+  destinationFingerprint: string | null = null,
+): Invoice {
   return {
     ...moveTo(inv, "paid", now),
     paymentIntentId: intentId,
+    destinationFingerprint,
     paidAt: now,
     amountPaid: inv.total,
     session: null,

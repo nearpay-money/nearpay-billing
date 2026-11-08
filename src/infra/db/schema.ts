@@ -107,6 +107,8 @@ export interface SubscriptionsTable {
   created_at: Timestamp;
   updated_at: Timestamp;
   version: number;
+  /** Test-mode billing clock offset in seconds (int8 as string; migration 0002, lld/billing.md §13). */
+  clock_offset_s: ColumnType<string, never, string>;
 }
 
 export interface SubscriptionItemsTable {
@@ -158,6 +160,7 @@ export interface InvoicesTable {
   payment_intent_id: string | null;
   payment_intent_ids: string[];
   pdf_object_key: string | null;
+  destination_fingerprint: ColumnType<string | null, string | null | undefined, string | null>;
   uncollectible_reason: string | null;
   finalized_at: OptTs;
   sent_at: OptTs;

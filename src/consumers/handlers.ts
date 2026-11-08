@@ -41,6 +41,7 @@ export function intentFacts(e: Envelope): IntentFacts {
     currency: pi.currency,
     assetId: pi.asset_id,
     amount: BigInt(pi.amount),
+    destinationFingerprint: pi.destination?.fingerprint ?? null,
   };
 }
 

@@ -408,3 +408,105 @@ describe("subscriptions", () => {
     expect(mixed.body.error.code).toBe("price_type_invalid");
   });
 });
+
+describe("test-mode billing clock (spec 0.3.1, lld/billing.md §13)", () => {
+  it("advance_clock: renewal_upcoming → notice, renewal → invoice, overdue → invoice.overdue; idempotent; live refused", async () => {
+    const { monthly } = await catalogue();
+    const created = await s.call("POST", "/v1/subscriptions", {
+      token: tok,
+      body: { customer: cus, items: [{ price: monthly.id }], dunning: { reminder_days: [0, 3] } },
+    });
+    const sub = SubscriptionSchema.parse(created.body);
+    const first = (await s.call("GET", `/v1/invoices?subscription=${sub.id}`, { token: tok })).body.data[0];
+    const pi = paymentIntent({
+      status: "succeeded",
+      amount: first.total,
+      currency: "usd",
+      source: "invoice",
+      invoice: first.id,
+    } as never);
+    await s.publishEvent(
+      domainEvent("evt.payments.payment_intent.succeeded", pi, {
+        accountUuid: uuid(m.account, "acct"),
+        livemode: false,
+      }),
+    );
+    await expect
+      .poll(async () => (await s.call("GET", `/v1/subscriptions/${sub.id}`, { token: tok })).body.status, {
+        timeout: 15_000,
+      })
+      .toBe("active");
+    // the paid mail's verification line: the fingerprint of the destination the intent settled to
+    const nctx = await s.call("GET", `/internal/invoices/${first.id}/notification-context`, {
+      token: await s.serviceToken("notify"),
+    });
+    expect(InvoiceNotificationContext.parse(nctx.body)).toMatchObject({
+      subtotal: first.subtotal,
+      tax: first.tax,
+      line_count: 1,
+      destination_fingerprint: pi.destination.fingerprint ?? null,
+    });
+
+    const path = `/v1/test_helpers/subscriptions/${sub.id}/advance_clock`;
+    const live = await s.call("POST", path, {
+      token: await s.token(m, { livemode: true }),
+      body: { target: "renewal" },
+    });
+    expect(live.body.error.code).toBe("livemode_forbidden");
+
+    const probe = await s.probe();
+    const end = sub.current_period_end;
+    const up = await s.call("POST", path, {
+      token: tok,
+      body: { target: "renewal_upcoming" },
+      headers: { "idempotency-key": "clk-1" },
+    });
+    expect(up.status).toBe(200);
+    expect(up.body).toMatchObject({
+      object: "subscription_clock_advance",
+      subscription: sub.id,
+      target: "renewal_upcoming",
+      clock_time: end - 3 * 86_400,
+    });
+    // advanced from real time (offset 0 before): clock_time − advanced_by ≈ now
+    expect(Math.abs(up.body.clock_time - up.body.advanced_by - Math.floor(Date.now() / 1000))).toBeLessThan(30);
+    const replay = await s.call("POST", path, {
+      token: tok,
+      body: { target: "renewal_upcoming" },
+      headers: { "idempotency-key": "clk-1" },
+    });
+    expect(replay.body).toEqual(up.body);
+    expect(replay.headers.get("idempotent-replayed")).toBe("true");
+    await probe.next("evt.billing.subscription.renewal_upcoming", (e) => e.aggregate.id === sub.id, 15_000);
+    expect((await s.call("POST", path, { token: tok, body: { target: "renewal_upcoming" } })).body.error.code).toBe(
+      "state_conflict",
+    );
+
+    const r = await s.call("POST", path, { token: tok, body: { target: "renewal" } });
+    expect(r.body).toMatchObject({ target: "renewal", clock_time: end });
+    // 3 days minus the real seconds that passed since the first advance
+    expect(3 * 86_400 - r.body.advanced_by).toBeGreaterThanOrEqual(0);
+    expect(3 * 86_400 - r.body.advanced_by).toBeLessThan(30);
+    const sent = await probe.next(
+      "evt.billing.invoice.sent",
+      (e) => (e.data.object as { subscription?: string }).subscription === sub.id,
+      15_000,
+    );
+    const renewal = InvoiceEvent.parse(sent.data.object);
+    expect(renewal).toMatchObject({ billing_reason: "subscription_cycle", period_start: end });
+
+    const o = await s.call("POST", path, { token: tok, body: { target: "overdue" } });
+    expect(o.body).toMatchObject({ target: "overdue", clock_time: renewal.due_date });
+    await probe.next("evt.billing.invoice.overdue", (e) => e.aggregate.id === renewal.id, 15_000);
+    await probe.next("evt.billing.invoice.reminder", (e) => e.aggregate.id === renewal.id, 15_000);
+    await expect
+      .poll(async () => (await s.call("GET", `/v1/subscriptions/${sub.id}`, { token: tok })).body.status, {
+        timeout: 15_000,
+      })
+      .toBe("past_due");
+    expect((await s.call("POST", path, { token: tok, body: { target: "overdue" } })).body.error.code).toBe(
+      "state_conflict",
+    );
+    await probe.close();
+  });
+});

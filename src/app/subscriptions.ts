@@ -6,9 +6,11 @@
 import { type Invoice, markSent, newDraft } from "../domain/invoice/invoice.js";
 import type { Period } from "../domain/invoice/lines.js";
 import { priceLines } from "../domain/invoice/lines.js";
-import { DomainError, type Metadata, missing, type Scope } from "../domain/shared.js";
+import { DomainError, type Metadata, missing, type Scope, stateConflict } from "../domain/shared.js";
 import {
+  type ClockTarget,
   cancel,
+  clockTargetTime,
   type ItemInput,
   newSubscription,
   patchSubscription,
@@ -24,7 +26,7 @@ import {
 } from "../domain/subscription/subscription.js";
 import { resolveTaxRates } from "../domain/tax-rate/tax-rate.js";
 import { type Ctx, type Meta, saveInvoice, saveSubscription } from "./commit.js";
-import { assertCanCollect, finalizeInTx, liveCustomer, loadCatalog, nowS } from "./invoices.js";
+import { assertCanCollect, clockS, finalizeInTx, liveCustomer, loadCatalog, nowS } from "./invoices.js";
 import type { Billing, BillingTx, CustomerFacts, MerchantFacts, Page, SubscriptionRepo } from "./ports.js";
 
 export interface SubscriptionCreateInput {
@@ -50,23 +52,27 @@ async function catalogFor(tx: BillingTx, scope: Scope, items: readonly ItemInput
   });
 }
 
-/** Renewal / upcoming jobs for the subscription's current period end. */
+/** The renewal job of the subscription's current period end (on its billing clock, §13). */
+const renewJobFor = (s: Subscription) => ({
+  kind: "subscription.renew" as const,
+  dedupeKey: `subscription.renew:${s.id}:${s.currentPeriodEnd}`,
+  runAt: s.currentPeriodEnd,
+  clockOffset: s.clockOffset ?? 0,
+  payload: { subscription: s.id, account_id: s.accountId, livemode: s.livemode, period_end: s.currentPeriodEnd },
+});
+
+/** The `renewal_upcoming` job of the subscription's current period end. */
+const upcomingJobFor = (s: Subscription) => ({
+  ...renewJobFor(s),
+  kind: "subscription.renewal_upcoming" as const,
+  dedupeKey: `subscription.renewal_upcoming:${s.id}:${s.currentPeriodEnd}`,
+  runAt: renewalUpcomingAt(s),
+});
+
+/** Renewal / upcoming jobs for the subscription's current period end; `now` is the subscription's clock. */
 async function scheduleRenewal(tx: BillingTx, s: Subscription, now: number): Promise<void> {
-  const payload = { subscription: s.id, account_id: s.accountId, livemode: s.livemode, period_end: s.currentPeriodEnd };
-  await tx.enqueue({
-    kind: "subscription.renew",
-    dedupeKey: `subscription.renew:${s.id}:${s.currentPeriodEnd}`,
-    runAt: s.currentPeriodEnd,
-    payload,
-  });
-  const upcoming = renewalUpcomingAt(s);
-  if (upcoming > now)
-    await tx.enqueue({
-      kind: "subscription.renewal_upcoming",
-      dedupeKey: `subscription.renewal_upcoming:${s.id}:${s.currentPeriodEnd}`,
-      runAt: upcoming,
-      payload,
-    });
+  await tx.enqueue(renewJobFor(s));
+  if (renewalUpcomingAt(s) > now) await tx.enqueue(upcomingJobFor(s));
 }
 
 /**
@@ -99,7 +105,7 @@ async function issuePeriodInvoice(
     taxRates: catalog.taxRates,
     requireActive: o.requireActive,
   });
-  const draft = newDraft(sub, o.invoiceId, nowS(b), {
+  const draft = newDraft(sub, o.invoiceId, clockS(b, sub), {
     currency: sub.currency,
     assetId: sub.assetId,
     customerId: sub.customerId,
@@ -114,6 +120,7 @@ async function issuePeriodInvoice(
     reminderDays: sub.dunning.reminderDays,
     settlementDestinationId: sub.settlementDestinationId,
     metadata: sub.metadata,
+    clockOffset: sub.clockOffset ?? 0,
   });
   const created = await saveInvoice(tx, null, draft, o.meta, ["evt.billing.invoice.created"]);
   const open = await finalizeInTx(b, tx, created, { merchant: o.merchant, customer: o.customer, meta: o.meta });
@@ -124,7 +131,7 @@ async function issuePeriodInvoice(
     );
     return open;
   }
-  return saveInvoice(tx, open, markSent(open, nowS(b)), { ...o.meta, cause: "sent with the subscription" }, [
+  return saveInvoice(tx, open, markSent(open, clockS(b, sub)), { ...o.meta, cause: "sent with the subscription" }, [
     "evt.billing.invoice.sent",
   ]);
 }
@@ -218,7 +225,7 @@ export function updateSubscription(
           fixed: { pricing: cur, recurring: cur.recurring },
         }).items
       : undefined;
-    const next = patchSubscription(cur, { ...input, items }, nowS(b));
+    const next = patchSubscription(cur, { ...input, items }, clockS(b, cur));
     return saveSubscription(tx, cur, next, { actor: c.actor, cause: "updated" }, ["evt.billing.subscription.updated"]);
   });
 }
@@ -227,7 +234,7 @@ export function cancelSubscription(b: Billing, c: Ctx, id: string, atPeriodEnd: 
   return b.store.transaction(async (tx) => {
     const cur = await tx.subscriptions.get(c.scope, id, { lock: true });
     if (!cur) throw missing("subscription", id);
-    const next = cancel(cur, nowS(b), atPeriodEnd);
+    const next = cancel(cur, clockS(b, cur), atPeriodEnd);
     return saveSubscription(
       tx,
       cur,
@@ -235,6 +242,53 @@ export function cancelSubscription(b: Billing, c: Ctx, id: string, atPeriodEnd: 
       { actor: c.actor, cause: atPeriodEnd ? "cancel at period end" : "canceled" },
       [atPeriodEnd ? "evt.billing.subscription.updated" : "evt.billing.subscription.deleted"],
     );
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Test-mode billing clock (lld/billing.md §13)
+// ---------------------------------------------------------------------------------------------
+
+export interface ClockAdvance {
+  readonly subscription: Subscription;
+  readonly target: ClockTarget;
+  /** The subscription's clock after the advance (unix seconds). */
+  readonly clockTime: number;
+  readonly advancedBy: number;
+}
+
+/**
+ * `advanceSubscriptionClock`: moves a test subscription's clock forward to `target` in one transaction —
+ * offset += delta, the pending clock jobs of the subscription and its invoices move earlier by delta (those
+ * due at the new clock time become due now and keep their order), and the target's renewal / notice job is
+ * enqueued if missing (same dedupe keys as the scheduler, so the sweep never double-invoices). The events
+ * follow asynchronously from the jobs. Idempotency-Key replays are answered by the service bootstrap.
+ */
+export async function advanceSubscriptionClock(
+  b: Billing,
+  c: Ctx,
+  id: string,
+  target: ClockTarget,
+): Promise<ClockAdvance> {
+  if (c.scope.livemode) throw new DomainError("livemode_forbidden");
+  return b.store.transaction(async (tx) => {
+    const cur = await tx.subscriptions.get(c.scope, id, { lock: true });
+    if (!cur) throw missing("subscription", id);
+    const clock = clockS(b, cur);
+    const dueDates = target === "overdue" ? await tx.invoices.openDueDates(cur, cur.id) : [];
+    const at = clockTargetTime(cur, target, clock, dueDates);
+    if (at === null)
+      throw stateConflict(
+        "subscription",
+        target === "overdue" ? "without an open invoice due ahead of its clock" : `${cur.status} at ${target}`,
+      );
+    const delta = at - clock;
+    const advanced = await tx.subscriptions.advanceClock(cur, delta);
+    const moved = await tx.shiftClockJobs(cur, cur.id, delta, nowS(b));
+    if (target === "renewal") await tx.enqueue(renewJobFor(advanced));
+    if (target === "renewal_upcoming") await tx.enqueue(upcomingJobFor(advanced));
+    b.log.info({ subscription: id, target, delta, jobs: moved }, "billing.test_clock.advanced");
+    return { subscription: advanced, target, clockTime: at, advancedBy: delta };
   });
 }
 
@@ -249,7 +303,9 @@ export interface SubscriptionJob {
   readonly at?: number | undefined;
 }
 
-const jobNow = (b: Billing, j: { readonly at?: number | undefined }): number => Math.max(nowS(b), j.at ?? 0);
+/** `max(clock now, at)` on the subscription's billing clock (§12 d17, §13). */
+const jobNow = (b: Billing, s: Subscription, j: { readonly at?: number | undefined }): number =>
+  Math.max(clockS(b, s), j.at ?? 0);
 
 const SYSTEM = "system:renewal";
 
@@ -257,11 +313,12 @@ const SYSTEM = "system:renewal";
 export async function renewJob(b: Billing, j: SubscriptionJob): Promise<void> {
   const before = await b.store.transaction((tx) => tx.subscriptions.get(j.scope, j.subscription));
   if (!before) return;
-  const first = renew(before, jobNow(b, j));
+  const first = renew(before, jobNow(b, before, j));
   if (first.kind === "none") return;
   if (first.kind === "wait") {
     // not due: the job for `current_period_end` exists (or is this one, running early) — retry later
-    if (j.at !== undefined && j.at < first.at) await b.store.transaction((tx) => scheduleRenewal(tx, before, nowS(b)));
+    if (j.at !== undefined && j.at < first.at)
+      await b.store.transaction((tx) => scheduleRenewal(tx, before, clockS(b, before)));
     else throw new Error(`renewal of ${j.subscription} is not due before ${first.at}`);
     return;
   }
@@ -273,7 +330,7 @@ export async function renewJob(b: Billing, j: SubscriptionJob): Promise<void> {
   await b.store.transaction(async (tx) => {
     const cur = await tx.subscriptions.get(j.scope, j.subscription, { lock: true });
     if (!cur) return;
-    const now = jobNow(b, j);
+    const now = jobNow(b, cur, j);
     const d = renew(cur, now);
     const meta = { actor: SYSTEM, cause: `renewal at ${cur.currentPeriodEnd}` };
     if (d.kind === "end") {
@@ -281,7 +338,7 @@ export async function renewJob(b: Billing, j: SubscriptionJob): Promise<void> {
       return;
     }
     if (d.kind === "wait") {
-      await scheduleRenewal(tx, cur, nowS(b));
+      await scheduleRenewal(tx, cur, clockS(b, cur));
       return;
     }
     if (d.kind !== "invoice" || !peers) return;
@@ -311,7 +368,7 @@ export function renewalUpcomingJob(b: Billing, j: SubscriptionJob & { readonly p
   return b.store.transaction(async (tx) => {
     const cur = await tx.subscriptions.get(j.scope, j.subscription, { lock: true });
     if (!cur || !renewalUpcomingApplies(cur, j.periodEnd)) return;
-    await saveSubscription(tx, cur, { ...cur, updated: nowS(b) }, { actor: SYSTEM, cause: "renewal upcoming" }, [
+    await saveSubscription(tx, cur, { ...cur, updated: clockS(b, cur) }, { actor: SYSTEM, cause: "renewal upcoming" }, [
       "evt.billing.subscription.renewal_upcoming",
     ]);
   });

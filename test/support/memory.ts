@@ -366,7 +366,8 @@ export interface TestBilling extends Billing {
   readonly logs: { level: string; msg: string; o: object }[];
 }
 
-export function testBilling(startMs: number): TestBilling {
+/** Use cases wired to fakes; `store` defaults to the in-memory store (the Postgres suite passes its own). */
+export function testBilling(startMs: number, store?: BillingStore): TestBilling {
   const mem = new MemoryStore();
   const pay = new FakePayments();
   const clock = { ms: startMs };
@@ -380,7 +381,7 @@ export function testBilling(startMs: number): TestBilling {
     objectsMap,
     logs,
     merchantFacts: MERCHANT,
-    store: mem,
+    store: store ?? mem,
     payments: pay.port,
     merchant: { context: async () => b.merchantFacts },
     assets: {

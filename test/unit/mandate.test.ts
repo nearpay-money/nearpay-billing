@@ -26,6 +26,7 @@ import {
   clearPending,
   dueCheck,
   errorBackoff,
+  keeperErrorsAfter,
   markSent,
   onTxFailure,
   planCollect,
@@ -410,7 +411,7 @@ describe("keeper decisions (§7.1)", () => {
     expect(planCollect({ ...m, status: "canceled" }, inv, T0).kind).toBe("fallback");
     expect(planCollect({ ...m, releasedAt: T0 }, inv, T0).kind).toBe("fallback");
     expect(planCollect(markSent(m, inv.id, "tx", T0), inv, T0 + 1000).kind).toBe("wait");
-    const spaced = clearPending(markSent(m, inv.id, "tx", T0), T0, { countError: false });
+    const spaced = clearPending(markSent(m, inv.id, "tx", T0), T0, "ERR_NOT_DUE");
     expect(planCollect(spaced, inv, T0 + 30)).toMatchObject({ kind: "wait", at: T0 + 60 });
     expect(planCollect(spaced, inv, T0 + 60).kind).toBe("send");
   });
@@ -432,6 +433,24 @@ describe("keeper decisions (§7.1)", () => {
     expect(onTxFailure("ERR_UNAUTHORIZED", 3, T0)).toEqual({ kind: "retry", at: T0 + 480 });
     expect(onTxFailure(null, 4, T0).kind).toBe("case");
     expect(errorBackoff(1)).toBe(60);
+  });
+
+  it("an unlisted vault error keeps the error streak, so the case is reached; ERR_GAS neither counts nor resets", () => {
+    const inv = { id: "in_x" };
+    let m = mandate();
+    let action = onTxFailure("ERR_UNAUTHORIZED", 0, T0);
+    for (let i = 0; i < 10 && action.kind === "retry"; i++) {
+      const before = m.keeper.keeperErrors;
+      m = clearPending(markSent(m, inv.id, `tx${i}`, T0), T0, "ERR_UNAUTHORIZED");
+      expect(m.keeper.keeperErrors).toBe(before + 1);
+      action = onTxFailure("ERR_UNAUTHORIZED", before, T0);
+    }
+    expect(action.kind).toBe("case");
+    expect(m.keeper.keeperErrors).toBe(5);
+    expect(keeperErrorsAfter("ERR_GAS", 3)).toBe(3);
+    expect(keeperErrorsAfter(null, 3)).toBe(4);
+    for (const c of ["ERR_NOT_DUE", "ERR_IN_FLIGHT", "ERR_INSUFFICIENT_BALANCE", "ERR_NOT_ACTIVE"] as const)
+      expect(keeperErrorsAfter(c, 3)).toBe(0);
   });
 
   it("falls back after 5 collect failures or 24 h", () => {

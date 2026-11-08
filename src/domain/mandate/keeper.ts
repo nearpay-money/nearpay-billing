@@ -111,15 +111,27 @@ export function markSent(m: Mandate, invoiceId: string, txHash: string, now: num
   };
 }
 
-/** The sent `collect` failed (no forwarded outcome will come): clear the pending mark. */
-export function clearPending(m: Mandate, now: number, o: { readonly countError: boolean }): Mandate {
+/**
+ * How a failed attempt changes the streak of unexplained keeper errors (§7.1 "other errors → retry ×5 then
+ * case"): an error §7.1 explains (`VAULT_KEEPER_ON_TX_FAILURE`) ends the streak, except `ERR_GAS`
+ * (misconfiguration: alerted and retried, not counted, streak kept); anything else (no vault code, or a vault
+ * code §7.1 does not list) counts, so the case is reached after `other_error_retries`.
+ */
+export function keeperErrorsAfter(code: VaultErrorCode | null, before: number): number {
+  if (code === "ERR_GAS") return before;
+  if (code !== null && code in VAULT_KEEPER_ON_TX_FAILURE) return 0;
+  return before + 1;
+}
+
+/** The sent `collect` failed (no forwarded outcome will come): clear the pending mark; `code` per `keeperErrorsAfter`. */
+export function clearPending(m: Mandate, now: number, code: VaultErrorCode | null): Mandate {
   return {
     ...m,
     keeper: {
       ...m.keeper,
       pendingTxHash: null,
       pendingSince: null,
-      keeperErrors: o.countError ? m.keeper.keeperErrors + 1 : 0,
+      keeperErrors: keeperErrorsAfter(code, m.keeper.keeperErrors),
     },
     updated: now,
   };

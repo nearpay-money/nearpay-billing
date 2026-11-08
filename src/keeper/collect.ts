@@ -144,8 +144,7 @@ async function onResult(b: Billing, j: CollectJob, r: CollectTxResult): Promise<
   const l = await b.store.transaction(async (tx) => {
     const cur = await load(b, tx, j, true);
     if (!cur || cur.m.keeper.pendingTxHash !== r.txHash) return null;
-    const known = r.code !== null && r.code !== "ERR_GAS";
-    const m = await saveMandate(tx, cur.m, clearPending(cur.m, now, { countError: !known }), {
+    const m = await saveMandate(tx, cur.m, clearPending(cur.m, now, r.code), {
       actor: SYSTEM,
       cause: `collect failed: ${r.code ?? r.message.slice(0, 200)}`,
     });
@@ -192,7 +191,7 @@ async function rpcError(b: Billing, j: CollectJob, l: Loaded, error: string): Pr
   await b.store.transaction(async (tx) => {
     const cur = await load(b, tx, j, true);
     if (cur)
-      await saveMandate(tx, cur.m, clearPending(cur.m, now, { countError: true }), {
+      await saveMandate(tx, cur.m, clearPending(cur.m, now, null), {
         actor: SYSTEM,
         cause: `rpc: ${error.slice(0, 200)}`,
       });
@@ -248,7 +247,7 @@ async function recheckPending(b: Billing, j: CollectJob, l: Loaded): Promise<voi
     await b.store.transaction(async (tx) => {
       const cur = await load(b, tx, j, true);
       if (cur && cur.m.keeper.pendingTxHash === hash)
-        await saveMandate(tx, cur.m, clearPending(cur.m, now, { countError: true }), {
+        await saveMandate(tx, cur.m, clearPending(cur.m, now, null), {
           actor: SYSTEM,
           cause: `collect ${hash} unknown`,
         });

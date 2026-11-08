@@ -447,6 +447,32 @@ describe("keeper failure paths", () => {
     expect(invoice(first.id).collectionMethod).toBe("send_invoice");
     expect(b.mem.state.cases.map((x) => x.kind)).toContain("keeper_errors");
   });
+
+  it("a vault error §7.1 does not list retries ×5 then case and fall back (the streak is not reset)", async () => {
+    const { m, first } = await linked();
+    for (let i = 0; i < 12; i++) b.fakeVault.results.push((h) => fail("ERR_UNAUTHORIZED")(h));
+    for (let i = 0; i < 12 && invoice(first.id).collectionMethod === "auto_debit"; i++) {
+      at(Math.floor(b.clock.ms / 1000) + 3600);
+      await jobs();
+    }
+    expect(b.fakeVault.sent).toHaveLength(5);
+    expect(b.mem.state.mandates.get(m.id)?.keeper.keeperErrors).toBe(5);
+    expect(invoice(first.id).collectionMethod).toBe("send_invoice");
+    expect(b.mem.state.cases.map((x) => x.kind)).toContain("keeper_errors");
+  });
+
+  it("ERR_GAS alerts and retries without counting toward the case", async () => {
+    const { m, first } = await linked();
+    for (let i = 0; i < 8; i++) b.fakeVault.results.push((h) => fail("ERR_GAS")(h));
+    for (let i = 0; i < 8; i++) {
+      at(Math.floor(b.clock.ms / 1000) + 3600);
+      await jobs();
+    }
+    expect(b.fakeVault.sent.length).toBeGreaterThanOrEqual(6);
+    expect(b.mem.state.mandates.get(m.id)?.keeper.keeperErrors).toBe(0);
+    expect(invoice(first.id).collectionMethod).toBe("auto_debit");
+    expect(b.logs.some((l) => l.msg.startsWith("ALERT keeper collect refused with ERR_GAS"))).toBe(true);
+  });
 });
 
 describe("subscription hooks", () => {

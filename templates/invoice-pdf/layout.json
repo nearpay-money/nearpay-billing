@@ -1,0 +1,32 @@
+{
+  "description": "Invoice PDF layout (lld/billing.md §11 d11). Units are PDF points (1/72 in); A4 portrait. Fonts are the standard Helvetica pair (no embedding). Labels are English (v1).",
+  "page": { "width": 595, "height": 842, "margin": 48 },
+  "fonts": { "regular": "Helvetica", "bold": "Helvetica-Bold" },
+  "sizes": { "title": 22, "heading": 11, "body": 9.5, "small": 8, "stamp": 40 },
+  "lineHeight": 14,
+  "linesPerPage": 28,
+  "columns": { "description": 0, "quantity": 280, "unit": 360, "amount": 499 },
+  "labels": {
+    "title": "Invoice",
+    "number": "Invoice number",
+    "issued": "Date of issue",
+    "due": "Date due",
+    "period": "Service period",
+    "billTo": "Bill to",
+    "from": "From",
+    "description": "Description",
+    "quantity": "Qty",
+    "unit": "Unit price",
+    "amount": "Amount",
+    "subtotal": "Subtotal",
+    "totalExcludingTax": "Total excluding tax",
+    "inclusive": "incl.",
+    "total": "Total",
+    "paid": "Amount paid",
+    "due_amount": "Amount due",
+    "page": "Page",
+    "testMode": "TEST MODE - not a real invoice",
+    "continued": "continued"
+  },
+  "stampColor": [0.8, 0.1, 0.1]
+}

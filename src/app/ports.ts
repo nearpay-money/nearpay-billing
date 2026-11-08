@@ -138,7 +138,12 @@ export interface Transition {
 /** What an event carries; the outbox adapter renders the spec object (`InvoiceEvent`, `Subscription`, …). */
 export type EventObject =
   | { readonly kind: "invoice"; readonly invoice: Invoice }
-  | { readonly kind: "subscription"; readonly subscription: Subscription }
+  | {
+      readonly kind: "subscription";
+      readonly subscription: Subscription;
+      /** Prices of its items (the event embeds each item's price object). */
+      readonly prices: ReadonlyMap<string, Price>;
+    }
   | { readonly kind: "invoice_reminder"; readonly invoice: Invoice; readonly reminder: Reminder };
 
 export interface OutgoingEvent {
@@ -289,6 +294,8 @@ export interface Logger {
 export interface BillingSettings {
   /** Hosted pages: `<payOrigin>/i/<in_…>#<invoice secret>`. */
   readonly payOrigin: string;
+  /** Public API origin (`invoice_pdf` = `<apiOrigin>/v1/invoices/<id>/pdf`). */
+  readonly apiOrigin: string;
   /** Fiat pricing currencies payments accepts. */
   readonly pricingCurrencies: ReadonlySet<string>;
   /** Anonymous session creations per minute per client network and per invoice. */

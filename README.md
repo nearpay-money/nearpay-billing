@@ -53,7 +53,7 @@ Secrets come only from `NP_<NAME>_FILE` (Docker secrets); everything else from `
 | `NP_NATS_URL`                                                                              | worker      | JetStream (events in and out)                                                         |
 | `NP_PAY_ORIGIN`                                                                            | api, worker | hosted invoice `<origin>/i/<in_…>#<secret>` (default `https://pay.nearpay.localhost`) |
 | `NP_PII_KEK_FILE`                                                                          | api, worker | 32-byte KEK for envelope encryption (invoice secret, bill-to, client secret)          |
-| `NP_OBJECT_STORE`                                                                          | api, worker | invoice PDFs: `fs:/data/invoices` (default) or `s3://bucket/prefix`                   |
+| `NP_OBJECT_STORE`                                                                          | api, worker | invoice PDFs: `fs:/data/invoices` (default; a volume — S3 after v1)                   |
 | `NP_PRICING_CURRENCIES`                                                                    | api         | fiat pricing currencies (comma list, same as payments)                                |
 | `NP_PUBLIC_SESSIONS_PER_CLIENT`, `NP_PUBLIC_SESSIONS_PER_INVOICE`                          | api         | hosted-page session creations per minute (10, 30)                                     |
 

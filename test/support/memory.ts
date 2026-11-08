@@ -403,6 +403,7 @@ export function testBilling(startMs: number, store?: BillingStore): TestBilling 
     },
     settings: {
       payOrigin: "https://pay.nearpay.test",
+      apiOrigin: "https://api.nearpay.test",
       pricingCurrencies: new Set(["usd", "eur"]),
       publicSessionsPerClient: 10,
       publicSessionsPerInvoice: 30,

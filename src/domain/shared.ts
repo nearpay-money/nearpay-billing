@@ -21,8 +21,10 @@ export class DomainError extends Error {
     readonly code: BillingErrorCode,
     readonly params: Readonly<Record<string, string | number>> = {},
     readonly param?: string,
+    /** A peer's rendered message, passed through unchanged (errors relayed from payments). */
+    readonly upstreamMessage?: string,
   ) {
-    super(`${code}${Object.keys(params).length ? ` ${JSON.stringify(params)}` : ""}`);
+    super(upstreamMessage ?? `${code}${Object.keys(params).length ? ` ${JSON.stringify(params)}` : ""}`);
     this.name = "DomainError";
   }
 }

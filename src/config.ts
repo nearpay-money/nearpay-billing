@@ -20,12 +20,14 @@ const shared = {
   railsUrl: http(),
   /** Hosted invoice origin: `<origin>/i/<in_…>#<invoice secret>`. */
   payOrigin: url(["https:", "http:"]).default("https://pay.nearpay.localhost"),
+  /** Public API origin (`Invoice.invoice_pdf` links). */
+  apiOrigin: url(["https:", "http:"]).default("https://api.nearpay.localhost"),
   /** 32-byte KEK (base64 or hex) for envelope encryption (invoice secret, bill-to, session client secret). */
   piiKek: secret(),
-  /** Invoice PDFs: `fs:/data/invoices` (local) or `s3://bucket/prefix` (server). */
+  /** Invoice PDFs: `fs:/<dir>` (a volume; S3 after v1). */
   objectStore: z
     .string()
-    .regex(/^(fs:\/.+|s3:\/\/.+)$/, "fs:/<dir> or s3://<bucket>/<prefix>")
+    .regex(/^fs:\/.+$/, "fs:/<dir> (s3:// arrives after v1)")
     .default("fs:/data/invoices"),
   /** Fiat pricing currencies payments accepts (same list as payments' `NP_PRICING_CURRENCIES`). */
   pricingCurrencies: list(z.string().regex(/^[a-z]{3}$/)).default(["usd", "eur", "gbp", "chf", "jpy", "cad", "aud"]),

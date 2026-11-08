@@ -86,13 +86,19 @@ export async function saveSubscription(
       actor: meta.actor,
       evidence: meta.evidence,
     });
+  const prices = subjects.length
+    ? await tx.prices.getMany(
+        row,
+        row.items.map((i) => i.priceId),
+      )
+    : new Map();
   for (const [i, subject] of subjects.entries()) {
     const version = v.first + i;
     await tx.emit({
       subject,
       aggregate: { type: "subscription", id: row.id, version },
       scope: { accountId: row.accountId, livemode: row.livemode },
-      object: { kind: "subscription", subscription: { ...row, version } },
+      object: { kind: "subscription", subscription: { ...row, version }, prices },
       ...(prev && prev.status !== row.status ? { previous: { status: prev.status } } : {}),
     });
   }

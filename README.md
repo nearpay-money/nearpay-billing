@@ -52,6 +52,7 @@ Secrets come only from `NP_<NAME>_FILE` (Docker secrets); everything else from `
 | `NP_RAILS_URL`                                                                             | api, worker | asset display data (symbol, decimals)                                                 |
 | `NP_NATS_URL`                                                                              | worker      | JetStream (events in and out)                                                         |
 | `NP_PAY_ORIGIN`                                                                            | api, worker | hosted invoice `<origin>/i/<in_…>#<secret>` (default `https://pay.nearpay.localhost`) |
+| `NP_API_ORIGIN`                                                                            | api, worker | public API origin for `Invoice.invoice_pdf` (default `https://api.nearpay.localhost`) |
 | `NP_PII_KEK_FILE`                                                                          | api, worker | 32-byte KEK for envelope encryption (invoice secret, bill-to, client secret)          |
 | `NP_OBJECT_STORE`                                                                          | api, worker | invoice PDFs: `fs:/data/invoices` (default; a volume — S3 after v1)                   |
 | `NP_PRICING_CURRENCIES`                                                                    | api         | fiat pricing currencies (comma list, same as payments)                                |
@@ -79,8 +80,8 @@ nearpay-billing/
 
 ## Status
 
-Stage 3 (step 3.2) in progress: schema, domain, use cases and their tests are in; routes, consumers,
-Postgres adapter, PDF renderer and integration/contract tests follow with `@nearpay/spec` 0.3.0.
+Stage 3 (step 3.2): products, prices, tax rates, invoices (hosted page, PDF), `send_invoice` subscriptions and
+dunning are implemented against `@nearpay/spec` 0.3.0 (kit 0.2.1). Stage 4 (mandates, keeper) is not started.
 
 ## Built with
 

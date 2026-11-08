@@ -12,8 +12,8 @@ import * as catalog from "../../src/app/catalog.js";
 import type { Ctx } from "../../src/app/commit.js";
 import * as subs from "../../src/app/subscriptions.js";
 import { markPaidByCollection } from "../../src/domain/invoice/invoice.js";
-import { applyCollected, type Mandate, release } from "../../src/domain/mandate/mandate.js";
 import { markSent } from "../../src/domain/mandate/keeper.js";
+import { applyCollected, type Mandate, release } from "../../src/domain/mandate/mandate.js";
 import { MIGRATIONS_DIR } from "../../src/infra/db/migrations.js";
 import type { DB } from "../../src/infra/db/schema.js";
 import { postgresStore } from "../../src/infra/db/store.js";
@@ -54,20 +54,37 @@ describe("mandates in Postgres", () => {
       assetId: null,
       recurring: { interval: "month" },
     });
-    b.merchantFacts = { ...b.merchantFacts, destinations: [{ ...b.merchantFacts.destinations[0], id: id("sd") } as never] };
+    b.merchantFacts = {
+      ...b.merchantFacts,
+      destinations: [{ ...b.merchantFacts.destinations[0], id: id("sd") } as never],
+    };
     b.merchantFacts = { ...b.merchantFacts, defaults: { "*": b.merchantFacts.destinations[0]?.id as string } };
-    const s = await subs.createSubscription(b, c, { customerId: cus, items: [{ priceId: price.id }], collectionMethod: "auto_debit" });
+    const s = await subs.createSubscription(b, c, {
+      customerId: cus,
+      items: [{ priceId: price.id }],
+      collectionMethod: "auto_debit",
+    });
     expect(s.collectionMethod).toBe("auto_debit");
 
     const m0: Mandate = {
-      ...mandate({ id: id("md"), subscriptionId: s.id, customerId: cus, settlementDestinationId: id("sd") }, { onchainId: 7 }),
+      ...mandate(
+        { id: id("md"), subscriptionId: s.id, customerId: cus, settlementDestinationId: id("sd") },
+        { onchainId: 7 },
+      ),
       lastEventHeight: 2 ** 40,
       startAtNs: 18_446_744_073_709_551_615n, // u64 max fits
       amountPerPeriod: 10n ** 38n,
     };
     await b.store.transaction(async (tx) => {
       await tx.mandates.insert(m0);
-      await tx.recordTransition({ aggregate: "mandate", id: m0.id, from: null, to: "active/linked", cause: "t", actor: "a" });
+      await tx.recordTransition({
+        aggregate: "mandate",
+        id: m0.id,
+        from: null,
+        to: "active/linked",
+        cause: "t",
+        actor: "a",
+      });
     });
     const back = await b.store.transaction((tx) => tx.mandates.get(SCOPE, m0.id));
     expect(back).toEqual(m0);
@@ -85,7 +102,9 @@ describe("mandates in Postgres", () => {
     // keeper state + collection + optimistic version
     const sent = { ...markSent(m0, s.latestInvoiceId as string, "txhash", T0), version: 1 };
     await b.store.transaction((tx) => tx.mandates.update(m0, sent));
-    await expect(b.store.transaction((tx) => tx.mandates.update(m0, { ...sent, version: 2 }))).rejects.toThrow(/concurrently/);
+    await expect(b.store.transaction((tx) => tx.mandates.update(m0, { ...sent, version: 2 }))).rejects.toThrow(
+      /concurrently/,
+    );
     const coll = {
       period: 1,
       amount: 10n ** 38n,
@@ -101,8 +120,17 @@ describe("mandates in Postgres", () => {
       expect(await tx.mandates.recordCollection(sent, coll, "paid")).toBe(true);
       expect(await tx.mandates.recordCollection(sent, coll, "paid")).toBe(false);
       expect(await tx.mandates.recordCollection(sent, { ...coll, receiptId: "receipt-2" }, "paid")).toBe(false); // same period
-      await tx.mandates.update(sent, { ...applyCollected(sent, coll, 5n, meta({ blockHeight: 2 ** 41 }), T0), version: 2 });
-      expect(await tx.mandates.recordCollection(sent, { ...coll, period: 2, receiptId: "receipt-3", invoiceId: null }, "unapplied")).toBe(true);
+      await tx.mandates.update(sent, {
+        ...applyCollected(sent, coll, 5n, meta({ blockHeight: 2 ** 41 }), T0),
+        version: 2,
+      });
+      expect(
+        await tx.mandates.recordCollection(
+          sent,
+          { ...coll, period: 2, receiptId: "receipt-3", invoiceId: null },
+          "unapplied",
+        ),
+      ).toBe(true);
       expect((await tx.mandates.unappliedCollection(sent))?.period).toBe(2);
     });
     const after = (await b.store.transaction((tx) => tx.mandates.get(SCOPE, m0.id))) as Mandate;
@@ -130,17 +158,53 @@ describe("mandates in Postgres", () => {
     expect(paid?.mandateCollection?.merchantShare).toBe(24_750_000n);
     // paid without any evidence is refused by the database
     await expect(
-      sql`update invoices set mandate_collection = null where id = ${paid ? (await import("../../src/infra/db/store.js")).uuidOf(paid.id) : ""}::uuid`.execute(db.db),
+      sql`update invoices set mandate_collection = null where id = ${paid ? (await import("../../src/infra/db/store.js")).uuidOf(paid.id) : ""}::uuid`.execute(
+        db.db,
+      ),
     ).rejects.toThrow();
 
     // vault event dedupe, parking and cases
     await b.store.transaction(async (tx) => {
-      const e = { dedupeKey: "r:0", vaultContract: "vault.sandbox.near", livemode: false, onchainId: 7, event: "topped_up", blockHeight: 1, outcome: "applied" };
+      const e = {
+        dedupeKey: "r:0",
+        vaultContract: "vault.sandbox.near",
+        livemode: false,
+        onchainId: 7,
+        event: "topped_up",
+        blockHeight: 1,
+        outcome: "applied",
+      };
       expect(await tx.vaultEvents.markApplied(e)).toBe(true);
       expect(await tx.vaultEvents.markApplied(e)).toBe(false);
-      await tx.vaultEvents.park({ dedupeKey: "r:1", vaultContract: "vault.sandbox.near", livemode: false, onchainId: 9, event: "collected", reason: "unknown_mandate", error: "x", payload: { a: 1 }, retryAt: T0 });
-      await tx.vaultEvents.park({ dedupeKey: "r:1", vaultContract: "vault.sandbox.near", livemode: false, onchainId: 9, event: "collected", reason: "unknown_mandate", error: "x", payload: { a: 1 }, retryAt: T0 });
-      await tx.openCase({ scope: SCOPE, mandateId: m0.id, invoiceId: invId, kind: "short_share", detail: { shortfall: 5n } });
+      await tx.vaultEvents.park({
+        dedupeKey: "r:1",
+        vaultContract: "vault.sandbox.near",
+        livemode: false,
+        onchainId: 9,
+        event: "collected",
+        reason: "unknown_mandate",
+        error: "x",
+        payload: { a: 1 },
+        retryAt: T0,
+      });
+      await tx.vaultEvents.park({
+        dedupeKey: "r:1",
+        vaultContract: "vault.sandbox.near",
+        livemode: false,
+        onchainId: 9,
+        event: "collected",
+        reason: "unknown_mandate",
+        error: "x",
+        payload: { a: 1 },
+        retryAt: T0,
+      });
+      await tx.openCase({
+        scope: SCOPE,
+        mandateId: m0.id,
+        invoiceId: invId,
+        kind: "short_share",
+        detail: { shortfall: 5n },
+      });
     });
     const due = await b.store.transaction((tx) => tx.vaultEvents.dueParked(T0 + 1, 10));
     expect(due).toEqual([{ dedupeKey: "r:1", payload: { a: 1 }, attempts: 2 }]);
@@ -150,9 +214,13 @@ describe("mandates in Postgres", () => {
 
     // release and list filters
     const cur = (await b.store.transaction((tx) => tx.mandates.get(SCOPE, m0.id))) as Mandate;
-    await b.store.transaction((tx) => tx.mandates.update(cur, { ...(release(cur, T0) as Mandate), version: cur.version + 1 }));
+    await b.store.transaction((tx) =>
+      tx.mandates.update(cur, { ...(release(cur, T0) as Mandate), version: cur.version + 1 }),
+    );
     expect(await b.store.transaction((tx) => tx.mandates.collectingFor(SCOPE, s.id))).toBeUndefined();
-    const page = await b.store.transaction((tx) => tx.mandates.list(SCOPE, { limit: 10, subscription: s.id, linkStatus: "linked" }));
+    const page = await b.store.transaction((tx) =>
+      tx.mandates.list(SCOPE, { limit: 10, subscription: s.id, linkStatus: "linked" }),
+    );
     expect(page.data.map((x) => x.id)).toEqual([m0.id]);
     expect((await b.store.transaction((tx) => tx.mandates.newestFor(SCOPE, s.id)))?.id).toBe(m0.id);
     const n = await sql<{ n: string }>`select count(*)::text as n from mandate_transitions`.execute(db.db);

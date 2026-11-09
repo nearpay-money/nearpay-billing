@@ -200,7 +200,8 @@ export async function createSubscription(b: Billing, c: Ctx, input: Subscription
     resolveTaxRates(defaults, catalog.taxRates, c.scope, "default_tax_rates");
     return resolveItems(input.items, { scope: c.scope, catalog, newId: () => b.newId("si") });
   });
-  if (input.collectionMethod === "auto_debit") assertAutoDebitPricing(b, pricing, "new");
+  if (input.collectionMethod === "auto_debit")
+    assertAutoDebitPricing(b, { ...pricing, livemode: c.scope.livemode }, "new");
   const merchant = await assertCanCollect(b, c.scope, {
     pricing,
     settlementDestinationId: input.settlementDestinationId ?? null,

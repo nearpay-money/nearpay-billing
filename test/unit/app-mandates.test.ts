@@ -267,7 +267,7 @@ describe("vault events", () => {
     expect(sub(s.id).mandateId).toBeNull();
     expect(subjects()).toContain("evt.billing.mandate.unlinked");
     // a test-vault mandate never links to a live subscription (and the reverse)
-    await deliver(record(createdFor(s, { mandate_id: 8 }), { vault: "v1.vault.nearpay.near" }), true);
+    await deliver(record(createdFor(s, { mandate_id: 8 }), { vault: "v1.vault.example.near" }), true);
     expect(mandates().find((x) => x.onchainId === 8)).toMatchObject({
       linkStatus: "unlinked",
       unlinkedReason: "mode_mismatch",
@@ -291,6 +291,107 @@ describe("vault events", () => {
     expect((mandates()[0] as Mandate).balance).toBe(100_000_000n);
     expect([...b.mem.state.parked.values()].filter((p) => !p.resolved && p.retryAt !== null)).toHaveLength(0);
     expect(await retryParkedVaultEvents(b)).toBe(0);
+  });
+});
+
+describe("live mode without a vault (NP_VAULT_CONTRACT unset: live auto-debit off)", () => {
+  const live: Ctx = { scope: LIVE, actor: "user:usr_1" };
+  let liveMonthly: string;
+  beforeEach(async () => {
+    b.pay.addCustomer(LIVE, { id: "cus_live" });
+    const p = await catalog.createProduct(b, live, { name: "Pro" });
+    liveMonthly = (
+      await catalog.createPrice(b, live, {
+        productId: p.id,
+        unitAmount: 2_500n,
+        currency: "usd",
+        assetId: null,
+        recurring: { interval: "month" },
+      })
+    ).id;
+  });
+  const liveAutoDebit = () =>
+    subs.createSubscription(b, live, {
+      customerId: "cus_live",
+      items: [{ priceId: liveMonthly }],
+      collectionMethod: "auto_debit",
+    });
+  const refusal = async (p: Promise<unknown>) => {
+    try {
+      await p;
+    } catch (e) {
+      if (e instanceof DomainError) return { code: e.code, param: e.param, reason: e.params.reason };
+      throw e;
+    }
+    return null;
+  };
+
+  it("refuses live auto_debit subscriptions and live funding before any RPC; test mode is unaffected", async () => {
+    b.fakeVault.liveContract = null;
+    b.fakeVault.rpcDown = true; // proves no vault call is made: an RPC call would answer rail_unavailable
+    expect(await refusal(liveAutoDebit())).toEqual({
+      code: "auto_debit_unavailable",
+      param: "collection_method",
+      reason: md.NO_LIVE_VAULT,
+    });
+    const plain = await subs.createSubscription(b, live, { customerId: "cus_live", items: [{ priceId: liveMonthly }] });
+    expect(await refusal(subs.updateSubscription(b, live, plain.id, { collectionMethod: "auto_debit" }))).toMatchObject(
+      {
+        code: "auto_debit_unavailable",
+        param: "collection_method",
+      },
+    );
+    expect(await refusal(md.prepareMandate(b, live, { subscriptionId: plain.id }))).toMatchObject({
+      code: "auto_debit_unavailable",
+      reason: md.NO_LIVE_VAULT,
+    });
+    // test mode keeps the sandbox stand-in
+    b.fakeVault.rpcDown = false;
+    const t = await autoDebitSub();
+    expect((await md.prepareMandate(b, c, { subscriptionId: t.id })).funding.vaultContract).toBe(VAULT);
+  });
+
+  it("an existing live auto_debit subscription: hosted page offers no setup, funding refused, mandates keep their vault", async () => {
+    const s = await liveAutoDebit(); // created while a vault was configured
+    const first = invoice(s.latestInvoiceId as string);
+    const secret = inv.invoiceSecretOf(b, first) as string;
+    expect((await md.getHostedInvoice(b, first.id, secret)).autoDebit?.available).toBe(true);
+    b.fakeVault.liveContract = null;
+    expect((await md.getHostedInvoice(b, first.id, secret)).autoDebit?.available).toBe(false);
+    expect(await code(md.createPublicInvoiceMandateFunding(b, first.id, secret, { payer: "alice.near" }))).toBe(
+      "auto_debit_unavailable",
+    );
+    expect(await code(md.prepareMandate(b, live, { subscriptionId: s.id }))).toBe("auto_debit_unavailable");
+    // live vault events cannot be applied without a configured vault (parked, alerted)
+    const r = record(createdFor(s), { vault: "v1.vault.example.near" });
+    expect(await deliver(r, true)).toBe("parked");
+    expect([...b.mem.state.parked.values()].at(-1)).toMatchObject({ reason: "wrong_vault", retryAt: null });
+    expect(b.logs.at(-1)?.o).toMatchObject({ reason: "wrong_vault", error: expect.stringContaining("no live vault") });
+  });
+
+  it("the keeper never collects a live mandate without a configured vault (alert, retry later)", async () => {
+    const s = await liveAutoDebit();
+    expect(await deliver(record(createdFor(s), { vault: "v1.vault.example.near" }), true)).toBe("applied");
+    const m = mandates()[0] as Mandate;
+    expect(m).toMatchObject({ livemode: true, vaultContract: "v1.vault.example.near", linkStatus: "linked" });
+    b.fakeVault.liveContract = null;
+    await jobs();
+    expect(b.fakeVault.sent).toHaveLength(0);
+    expect(b.logs.some((l) => l.msg.startsWith("ALERT no live vault configured"))).toBe(true);
+    // the stored mandate keeps its own vault; the invoice is still auto-debit (not fallen back)
+    expect((mandates()[0] as Mandate).vaultContract).toBe("v1.vault.example.near");
+    expect(invoice(s.latestInvoiceId as string).collectionMethod).toBe("auto_debit");
+    // a different configured vault is not the mandate's: still no collect
+    b.fakeVault.liveContract = "v2.vault.example.near";
+    at(Math.floor(b.clock.ms / 1000) + 3600);
+    await jobs();
+    expect(b.fakeVault.sent).toHaveLength(0);
+    expect(b.logs.some((l) => l.msg.startsWith("ALERT mandate's vault is not the configured vault"))).toBe(true);
+    // its own vault configured again: the keeper collects
+    b.fakeVault.liveContract = "v1.vault.example.near";
+    at(Math.floor(b.clock.ms / 1000) + 3600);
+    await jobs();
+    expect(b.fakeVault.sent).toEqual([expect.objectContaining({ livemode: true, onchainId: 7 })]);
   });
 });
 

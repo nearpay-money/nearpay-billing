@@ -112,6 +112,8 @@ export interface Stack {
 
 export interface StackOptions {
   worker?: boolean;
+  /** `NP_VAULT_CONTRACT` (default `v1.vault.example.near`); null = unset (live auto-debit off). */
+  vaultContract?: string | null;
 }
 
 /** The sandbox vault stand-in (NEAR JSON-RPC + `/sim/vault/*`), answered with the spec's vault vectors. */
@@ -372,7 +374,7 @@ export async function startStack(o: StackOptions = {}): Promise<Stack> {
     publicSessionsPerInvoice: 1000,
     natsUrl: nats?.url ?? "nats://127.0.0.1:9",
     // Stage 4 (no keeper key: the live keeper is off; test mode uses the stand-in when configured)
-    vaultContract: "v1.vault.nearpay.near",
+    ...(o.vaultContract === null ? {} : { vaultContract: o.vaultContract ?? "v1.vault.example.near" }),
     nearRpcUrls: ["http://127.0.0.1:9/near-rpc"],
     testVaultContract: "vault.sandbox.near",
     sandboxBaseUrl: sandbox.url,

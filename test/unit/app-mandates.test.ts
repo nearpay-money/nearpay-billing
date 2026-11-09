@@ -180,7 +180,30 @@ describe("prepareMandate", () => {
       `{"create_mandate":{"merchant_receiver":"acme.near","receiver_kind":"intents_account","amount_per_period":"25000000","period_secs":2629746,"start_at":null,"max_periods":null,"fee_bps":100,"ext_ref":"${s.id}"}}`,
     );
     expect(f.funding.transactions.map((t) => t.methodName)).toEqual(["storage_deposit", "ft_transfer_call"]);
+    expect(f.tokenAsset).toEqual({ assetId: "nep141:usdc.near", symbol: "USDC", decimals: 6 });
     expect(b.mem.state).toEqual(before);
+  });
+
+  it("token_asset is omitted, never fatal, when rails' registry fails after the decimals lookup", async () => {
+    const s = await autoDebitSub();
+    const asset = b.assets.asset;
+    let calls = 0;
+    let failAfter = Number.POSITIVE_INFINITY;
+    b.assets.asset = async (id) => {
+      calls += 1;
+      if (calls > failAfter) throw new Error("rails down");
+      return asset.call(b.assets, id);
+    };
+    try {
+      await md.prepareMandate(b, c, { subscriptionId: s.id });
+      failAfter = calls - 1; // every lookup but the last (token_asset) succeeds
+      calls = 0;
+      const f = await md.prepareMandate(b, c, { subscriptionId: s.id });
+      expect(f.funding.terms.token).toBe("usdc.near");
+      expect(f.tokenAsset).toBeNull();
+    } finally {
+      b.assets.asset = asset;
+    }
   });
 
   it("refuses: not auto_debit, already linked, RPC down, live account not live", async () => {
@@ -564,6 +587,7 @@ describe("test helpers, reads and notification context", () => {
     expect(pub.collecting).toBe(true);
     expect(pub.tx.cancel?.signerId).toBe("alice.near");
     expect(pub.tx.withdraw).toBeNull();
+    expect(pub.tokenAsset).toEqual({ assetId: "nep141:usdc.near", symbol: "USDC", decimals: 6 });
     expect(await md.publicAutoDebit(b, invoice(first.id))).toEqual({
       available: false,
       mandate: m.id,

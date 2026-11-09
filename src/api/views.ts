@@ -36,7 +36,7 @@ import type {
   MandateNotificationData,
   SubscriptionNotificationData,
 } from "../app/notification.js";
-import type { EventObject } from "../app/ports.js";
+import type { AssetFacts, EventObject } from "../app/ports.js";
 import type { ClockAdvance } from "../app/subscriptions.js";
 import type { Reminder } from "../domain/dunning/dunning.js";
 import { nextReminder } from "../domain/dunning/dunning.js";
@@ -513,6 +513,13 @@ export function mandateView(m: Mandate): MandateT {
   } as MandateT;
 }
 
+/** Optional `token_asset` (spec 0.4.1) of the funding instructions / payer view: omitted when unknown. */
+function tokenAssetView(a: AssetFacts | null): {
+  token_asset?: { asset_id: AssetIdT; symbol: string; decimals: number };
+} {
+  return a ? { token_asset: { asset_id: a.assetId as AssetIdT, symbol: a.symbol, decimals: a.decimals } } : {};
+}
+
 export function fundingView(d: FundingData): z.infer<typeof MandateFundingInstructions> {
   const f = d.funding;
   const t = f.terms;
@@ -523,6 +530,7 @@ export function fundingView(d: FundingData): z.infer<typeof MandateFundingInstru
     vault_contract: f.vaultContract,
     token: t.token,
     asset_id: t.assetId,
+    ...tokenAssetView(d.tokenAsset),
     amount: f.amount.toString(),
     periods: f.periods,
     amount_per_period: t.amountPerPeriod.toString(),
@@ -560,6 +568,7 @@ export function publicMandateView(d: PublicMandateData): z.infer<typeof PublicMa
     onchain_id: m.onchainId,
     token: m.token,
     asset_id: tokenAssetId(m.token),
+    ...tokenAssetView(d.tokenAsset),
     amount_per_period: m.amountPerPeriod.toString(),
     period_secs: m.periodSecs,
     balance: m.balance.toString(),

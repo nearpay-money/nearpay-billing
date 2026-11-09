@@ -147,6 +147,20 @@ export interface FundingData {
   readonly livemode: boolean;
   readonly subscriptionId: string;
   readonly funding: Funding;
+  /** rails' facts of the funded token (`token_asset`, spec 0.4.1); null when the registry has none. */
+  readonly tokenAsset: AssetFacts | null;
+}
+
+/**
+ * rails' asset facts of a vault token — the same source as `MandateNotificationContext.token_asset`. The
+ * field is optional on the funding instructions / payer view, so a registry outage omits it, never fails.
+ */
+export async function tokenAssetFacts(b: Billing, token: string): Promise<AssetFacts | null> {
+  try {
+    return (await b.assets.asset(tokenAssetId(token))) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -207,7 +221,7 @@ async function computeFunding(
     storage,
     subscriptionId: sub.id,
   });
-  return { livemode: sub.livemode, subscriptionId: sub.id, funding };
+  return { livemode: sub.livemode, subscriptionId: sub.id, funding, tokenAsset: await tokenAssetFacts(b, terms.token) };
 }
 
 export function prepareMandate(
@@ -282,6 +296,8 @@ export interface PublicMandateData {
   readonly mandate: Mandate;
   readonly collecting: boolean;
   readonly tx: PayerTransactions;
+  /** rails' facts of the mandate's token (`token_asset`, spec 0.4.1); null when the registry has none. */
+  readonly tokenAsset: AssetFacts | null;
 }
 
 /** `getPublicInvoiceMandate`: the newest mandate of the invoice's subscription (invoice secret; §14 d8). */
@@ -294,7 +310,12 @@ export async function getPublicInvoiceMandate(
   const subId = inv.subscriptionId;
   const m = subId ? await b.store.transaction((tx) => tx.mandates.newestFor(inv, subId)) : undefined;
   if (!m) throw missing("mandate", invoiceId);
-  return { mandate: m, collecting: isCollecting(m), tx: payerTransactions(m) };
+  return {
+    mandate: m,
+    collecting: isCollecting(m),
+    tx: payerTransactions(m),
+    tokenAsset: await tokenAssetFacts(b, m.token),
+  };
 }
 
 /** `getPublicInvoice` with `PublicInvoice.auto_debit` (the hosted page offers auto-debit setup, §14 d6, d8). */

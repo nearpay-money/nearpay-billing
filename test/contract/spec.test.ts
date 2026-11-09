@@ -273,6 +273,12 @@ describe("Stage 4 objects parse with the spec 0.4.0 schemas", () => {
       fundingView(await md.prepareMandate(b, c, { subscriptionId: s.id, payer: "alice.near" })),
     );
     expect(prepared).toMatchObject({ subscription: s.id, amount_per_period: "25000000", periods: 3 });
+    // token_asset (spec 0.4.1): the same rails facts as MandateNotificationContext.token_asset
+    const usdc = { asset_id: "nep141:usdc.near", symbol: "USDC", decimals: 6 };
+    expect(prepared.token_asset).toEqual(usdc);
+    expect(
+      fundingView({ ...(await md.prepareMandate(b, c, { subscriptionId: s.id })), tokenAsset: null }),
+    ).not.toHaveProperty("token_asset");
     MandateFundingInstructions.parse(fundingView(await md.createPublicInvoiceMandateFunding(b, first.id, secret, {})));
     expect(
       PublicInvoice.parse(publicInvoiceView(await md.getHostedInvoice(b, first.id, secret))).auto_debit,
@@ -369,8 +375,10 @@ describe("Stage 4 objects parse with the spec 0.4.0 schemas", () => {
     for (const x of (await md.listMandates(b, c, { limit: 10, created: {} })).data) Mandate.parse(mandateView(x));
     const cancel = await md.prepareMandateCancel(b, c, m7.id);
     MandateCancelInstructions.parse(cancelInstructionsView(cancel.mandate, cancel.transaction));
-    PublicMandate.parse(publicMandateView(await md.getPublicInvoiceMandate(b, first.id, secret)));
-    MandateNotificationContext.parse(mandateNotificationView(await mandateNotificationContext(b, m7.id)));
+    const pub = PublicMandate.parse(publicMandateView(await md.getPublicInvoiceMandate(b, first.id, secret)));
+    const notif = MandateNotificationContext.parse(mandateNotificationView(await mandateNotificationContext(b, m7.id)));
+    expect(pub.token_asset).toEqual(notif.token_asset);
+    expect(pub.token_asset).toEqual(usdc);
     b.fakeSandbox.outcomes.push({
       txHash: "SimTx1111111111111111111111111111111111111111",
       failure: null,

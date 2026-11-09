@@ -10,10 +10,11 @@
  */
 import { KeyPair, PublicKey } from "@near-js/crypto";
 import { actionCreators, createTransaction, Signature, SignedTransaction } from "@near-js/transactions";
+import { VAULT_GAS, VAULT_VIEWS, vaultErrorCodeOf } from "@nearpay/spec";
+import type { NearFinalExecutionOutcome } from "@nearpay-internal/spec";
 import { sha256 } from "@noble/hashes/sha2.js";
 import bs58 from "bs58";
 import type { CollectTxResult, SignedCollect, VaultConfigFacts, VaultPort } from "../../app/ports.js";
-import { type NearFinalExecutionOutcome, VAULT_GAS, VAULT_VIEWS, vaultErrorCodeOf } from "../../spec-0.4.0.js";
 import { type NearRpc, NearRpcError } from "./rpc.js";
 
 export interface KeeperKey {

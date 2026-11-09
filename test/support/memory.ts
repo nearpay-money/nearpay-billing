@@ -358,7 +358,8 @@ function txOf(s: MemoryState): BillingTx {
             (q.customer === undefined || r.customerId === q.customer) &&
             (q.subscription === undefined || r.subscriptionId === q.subscription) &&
             (q.dueDate?.gte === undefined || (r.dueDate !== null && r.dueDate >= q.dueDate.gte)) &&
-            (q.dueDate?.lte === undefined || (r.dueDate !== null && r.dueDate <= q.dueDate.lte)),
+            (q.dueDate?.lte === undefined || (r.dueDate !== null && r.dueDate <= q.dueDate.lte)) &&
+            (q.collectionMethod === undefined || r.collectionMethod === q.collectionMethod),
         ),
       async bySubscriptionPeriod(scope, subscriptionId, periodStart) {
         const r = [...s.invoices.values()].find(

@@ -8,6 +8,8 @@
  * Mandate rows exist only from `mandate_created` whose `ext_ref` names a subscription (§14 d1). An invoice
  * is paid by auto-debit only from a `collected` event (INV-2), with `Invoice.mandate_collection` as evidence.
  */
+
+import type { VaultEvent } from "@nearpay/spec";
 import { type Invoice, markPaidByCollection, newDraft, voidAfterShortCollection } from "../domain/invoice/invoice.js";
 import { classifyCollection, evidenceOf, switchToAutoDebit } from "../domain/mandate/collection.js";
 import { afterCollectFailed } from "../domain/mandate/keeper.js";
@@ -30,7 +32,6 @@ import {
 import { decideLink, tokenAssetId } from "../domain/mandate/terms.js";
 import type { Scope } from "../domain/shared.js";
 import { withMandate } from "../domain/subscription/subscription.js";
-import type { VaultEvent } from "../spec-0.4.0.js";
 
 /**
  * The fields billing reads from `evt.rails.vault.event` (spec `VaultEventRecord`, parsed with the spec schema

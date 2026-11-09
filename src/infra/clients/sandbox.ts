@@ -4,15 +4,16 @@
  * cancel/withdraw, storage) and `POST /sim/vault/advance` (mandate clock). Service scope `sandbox.use`.
  * Test mode only by construction: nothing here is reachable from live-mode code paths.
  */
+
+import { SMART_CONTRACT_PANICKED_PREFIX } from "@nearpay/spec";
 import { httpClient } from "@nearpay-internal/http";
-import type { SandboxVaultPort, SimOutcome } from "../../app/ports.js";
 import {
   type NearFinalExecutionOutcome,
-  SMART_CONTRACT_PANICKED_PREFIX,
   sandboxVaultAdvance,
   sandboxVaultCall,
   sandboxVaultFtTransferCall,
-} from "../../spec-0.4.0.js";
+} from "@nearpay-internal/spec";
+import type { SandboxVaultPort, SimOutcome } from "../../app/ports.js";
 import type { PeerOptions } from "./peers.js";
 
 const BREAKER = { failureRate: 0.5, minCalls: 10, windowMs: 30_000, halfOpenAfterMs: 15_000 } as const;

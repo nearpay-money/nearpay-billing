@@ -1,17 +1,22 @@
 /**
- * Contract (foundations §16): every Stage-3 billing route is bound (and nothing else); every subject the
+ * Contract (foundations §16): every Stage 3–4 billing route is bound (and nothing else); every subject the
  * catalogue routes to billing is handled; every subject billing produces is emitted; the objects billing
- * serves and emits parse with the spec 0.3.0 schemas.
+ * serves and emits parse with the spec 0.4.0 schemas (auto-debit: mandates, vault events, hosted setup).
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
   Invoice,
   InvoicePaymentSession,
+  Mandate,
+  MandateCancelInstructions,
+  MandateFundingInstructions,
+  MandateSimulation,
   Price,
   Product,
   PUBLIC_ROUTES,
   PublicInvoice,
+  PublicMandate,
   Subscription,
   SubscriptionClockAdvance,
   TaxRate,
@@ -21,6 +26,7 @@ import { unimplementedRoutes } from "@nearpay-internal/service";
 import {
   INTERNAL_ROUTES,
   InvoiceNotificationContext,
+  MandateNotificationContext,
   SUBJECTS,
   type Subject,
   SubscriptionNotificationContext,
@@ -28,14 +34,20 @@ import {
 import { describe, expect, it } from "vitest";
 import { billingRoutes } from "../../src/api/routes.js";
 import {
+  cancelInstructionsView,
   clockAdvanceView,
   eventRenderer,
+  fundingView,
   invoiceNotificationView,
   invoicePaymentSessionView,
   invoiceView,
+  mandateNotificationView,
+  mandateView,
   priceView,
   productView,
   publicInvoiceView,
+  publicMandateView,
+  simulationView,
   subscriptionNotificationView,
   subscriptionView,
   taxRateView,
@@ -44,8 +56,14 @@ import * as catalog from "../../src/app/catalog.js";
 import type { Ctx } from "../../src/app/commit.js";
 import { createPublicInvoiceSession, getPublicInvoice } from "../../src/app/hosted.js";
 import * as inv from "../../src/app/invoices.js";
-import { invoiceNotificationContext, subscriptionNotificationContext } from "../../src/app/notification.js";
+import * as md from "../../src/app/mandates.js";
+import {
+  invoiceNotificationContext,
+  mandateNotificationContext,
+  subscriptionNotificationContext,
+} from "../../src/app/notification.js";
 import * as subs from "../../src/app/subscriptions.js";
+import { onVaultEvent, type VaultEventRecord } from "../../src/app/vault-events.js";
 import { billingHandlers } from "../../src/consumers/handlers.js";
 import { newBillingId } from "../../src/infra/ids.js";
 import { jobHandlers } from "../../src/workers/jobs.js";
@@ -56,16 +74,17 @@ const ALL = [...PUBLIC_ROUTES, ...INTERNAL_ROUTES];
 const c: Ctx = { scope: SCOPE, actor: "secret_key:key_1" };
 
 describe("routes and events", () => {
-  it("binds every Stage-3 billing route, and nothing else", () => {
+  it("binds every Stage 3–4 billing route, and nothing else", () => {
     const bindings = billingRoutes({} as never, "test");
-    expect(unimplementedRoutes("billing", ALL, bindings, 3).map((r) => r.id)).toEqual([]);
+    expect(unimplementedRoutes("billing", ALL, bindings, 4).map((r) => r.id)).toEqual([]);
     expect(bindings.map((b) => b.route.id).sort()).toEqual(
       [...new Map(ALL.map((r) => [r.id, r])).values()]
-        .filter((r) => r.service === "billing" && r.stage <= 3)
+        .filter((r) => r.service === "billing" && r.stage <= 4)
         .map((r) => r.id)
         .sort(),
     );
-    expect(bindings).toHaveLength(33);
+    // 33 Stage-3 routes + 8 public mandate routes + the internal mandate notification context
+    expect(bindings).toHaveLength(42);
   });
 
   it("handles every subject the catalogue routes to billing", () => {
@@ -74,11 +93,11 @@ describe("routes and events", () => {
     for (const s of Object.keys(handlers) as Subject[]) expect(SUBJECTS[s].consumers).toContain("billing");
   });
 
-  it("emits every subject billing produces (Stage 3)", () => {
+  it("emits every subject billing produces (Stage 3–4)", () => {
     const produced = (Object.keys(SUBJECTS) as Subject[]).filter(
-      (k) => SUBJECTS[k].producer === "billing" && SUBJECTS[k].stage <= 3,
+      (k) => SUBJECTS[k].producer === "billing" && SUBJECTS[k].stage <= 4,
     );
-    expect(produced.length).toBe(13);
+    expect(produced.length).toBe(21);
     const files = (dir: string): string[] =>
       readdirSync(dir).flatMap((f) => (statSync(join(dir, f)).isDirectory() ? files(join(dir, f)) : [join(dir, f)]));
     const src = files(new URL("../../src", import.meta.url).pathname)
@@ -215,5 +234,165 @@ describe("objects parse with the spec schemas", () => {
       expect(subjects.has(want), want).toBe(true);
     for (const e of b.mem.state.outbox)
       expect(SUBJECTS[e.subject as keyof typeof SUBJECTS].object.safeParse(render(e.object)).success).toBe(true);
+  });
+});
+
+describe("Stage 4 objects parse with the spec 0.4.0 schemas", () => {
+  const NS = 1_000_000_000n;
+  const VAULT = "vault.sandbox.near";
+
+  it("mandates (API, events, hosted, notification, simulations), auto-debit invoices and subscriptions", async () => {
+    const b = testBilling(T0 * 1000);
+    (b as { newId: typeof b.newId }).newId = newBillingId;
+    b.fakeVault.blockNs = BigInt(T0) * NS;
+    const sd = newBillingId("in").replace(/^in_/, "sd_");
+    const dest = { ...(b.merchantFacts.destinations[0] as (typeof b.merchantFacts.destinations)[number]), id: sd };
+    b.merchantFacts = { ...b.merchantFacts, destinations: [dest], defaults: { "*": sd } };
+    const cus = newBillingId("in").replace(/^in_/, "cus_");
+    b.pay.addCustomer(SCOPE, { id: cus });
+    const p = await catalog.createProduct(b, c, { name: "Pro" });
+    const monthly = await catalog.createPrice(b, c, {
+      productId: p.id,
+      unitAmount: 2_500n,
+      currency: "usd",
+      assetId: null,
+      recurring: { interval: "month" },
+    });
+    const s = await subs.createSubscription(b, c, {
+      customerId: cus,
+      items: [{ priceId: monthly.id }],
+      collectionMethod: "auto_debit",
+    });
+    const first = b.mem.state.invoices.get(s.latestInvoiceId as string) as NonNullable<
+      ReturnType<typeof b.mem.state.invoices.get>
+    >;
+    const secret = inv.invoiceSecretOf(b, first) as string;
+
+    // prepare (merchant) and hosted setup (invoice secret): the same instructions
+    const prepared = MandateFundingInstructions.parse(
+      fundingView(await md.prepareMandate(b, c, { subscriptionId: s.id, payer: "alice.near" })),
+    );
+    expect(prepared).toMatchObject({ subscription: s.id, amount_per_period: "25000000", periods: 3 });
+    MandateFundingInstructions.parse(fundingView(await md.createPublicInvoiceMandateFunding(b, first.id, secret, {})));
+    expect(
+      PublicInvoice.parse(publicInvoiceView(await md.getHostedInvoice(b, first.id, secret))).auto_debit,
+    ).toMatchObject({ available: true, mandate: null });
+
+    // vault events: one linked mandate (#7), one unlinked (#8, payer-edited fee)
+    let n = 0;
+    const record = (event: string, data: Record<string, unknown>): VaultEventRecord => {
+      n += 1;
+      return {
+        vault_contract: VAULT,
+        tx_hash: `TxHash${String(n).padStart(38, "1")}`,
+        receipt_id: `Receipt${String(n).padStart(37, "1")}`,
+        log_index: 0,
+        block_height: 100 + n,
+        block_hash: `bh_${n}`,
+        block_timestamp: (BigInt(Math.floor(b.clock.ms / 1000)) * NS).toString(),
+        event: { standard: "nearpay_vault", version: "1.0.0", event, data: [data] },
+      } as unknown as VaultEventRecord;
+    };
+    const created = (id: number, o: Record<string, unknown> = {}) =>
+      record("mandate_created", {
+        mandate_id: id,
+        payer: "alice.near",
+        merchant_receiver: "acme.near",
+        token: "usdc.near",
+        amount_per_period: "25000000",
+        period_secs: 2_629_746,
+        start_at: (BigInt(T0) * NS).toString(),
+        max_periods: null,
+        fee_bps: 100,
+        ext_ref: s.id,
+        receiver_kind: "intents_account",
+        balance: "75000000",
+        ...o,
+      });
+    const deliver = (r: VaultEventRecord) => onVaultEvent(b, { livemode: false, record: r });
+    expect(await deliver(created(7))).toBe("applied");
+    expect(await deliver(created(8, { fee_bps: 0 }))).toBe("applied");
+    const linked = [...b.mem.state.mandates.values()].find((m) => m.onchainId === 7);
+    expect(linked?.linkStatus).toBe("linked");
+    const m7 = linked as NonNullable<typeof linked>;
+    const m8 = [...b.mem.state.mandates.values()].find((m) => m.onchainId === 8) as typeof m7;
+
+    // the keeper collects the first invoice; the forwarded `collected` pays it (evidence on the invoice)
+    await runDueJobs(b, jobHandlers(b));
+    expect(b.fakeVault.sent).toHaveLength(1);
+    await deliver(
+      record("collected", {
+        mandate_id: 7,
+        period: 1,
+        amount: "25000000",
+        merchant_share: "24750000",
+        fee: "250000",
+        balance: "50000000",
+      }),
+    );
+    await deliver(record("topped_up", { mandate_id: 7, amount: "25000000", balance: "75000000" }));
+    const paid = b.mem.state.invoices.get(first.id) as typeof first;
+    const pv = Invoice.parse(invoiceView(paid, { hostedInvoiceUrl: null, apiOrigin: "https://api.nearpay.test" }));
+    expect(pv).toMatchObject({ status: "paid", collection_method: "auto_debit", mandate: m7.id });
+    expect(pv.mandate_collection).toMatchObject({ mandate: m7.id, period: 1, merchant_share: "24750000" });
+    const sub = b.mem.state.subscriptions.get(s.id) as typeof s;
+    const prices = await b.store.transaction((tx) => tx.prices.getMany(sub, [monthly.id]));
+    expect(Subscription.parse(subscriptionView(sub, prices))).toMatchObject({
+      collection_method: "auto_debit",
+      mandate: m7.id,
+    });
+
+    // reads, merchant cancel, payer view, notification context, simulations
+    const cur = await md.getMandate(b, c, m7.id);
+    expect(Mandate.parse(mandateView(cur))).toMatchObject({ id: m7.id, status: "active", link_status: "linked" });
+    expect(Mandate.parse(mandateView(m8))).toMatchObject({
+      link_status: "unlinked",
+      unlinked_reason: "already_linked",
+    });
+    for (const x of (await md.listMandates(b, c, { limit: 10, created: {} })).data) Mandate.parse(mandateView(x));
+    const cancel = await md.prepareMandateCancel(b, c, m7.id);
+    MandateCancelInstructions.parse(cancelInstructionsView(cancel.mandate, cancel.transaction));
+    PublicMandate.parse(publicMandateView(await md.getPublicInvoiceMandate(b, first.id, secret)));
+    MandateNotificationContext.parse(mandateNotificationView(await mandateNotificationContext(b, m7.id)));
+    b.fakeSandbox.outcomes.push({
+      txHash: "SimTx1111111111111111111111111111111111111111",
+      failure: null,
+      vaultLogs: [],
+    });
+    MandateSimulation.parse(simulationView(await md.simulateMandatePayerAction(b, c, m7.id, { action: "withdraw" })));
+
+    // insufficient funds on the next renewal, then release (subscription canceled), cancel and exhaustion
+    const adv = await subs.advanceSubscriptionClock(b, c, s.id, "renewal");
+    b.clock.ms += 3_600_000;
+    b.fakeVault.blockNs = BigInt(Math.floor(b.clock.ms / 1000)) * NS;
+    b.fakeVault.results.push((h) => ({
+      kind: "failure",
+      txHash: h,
+      code: "ERR_INSUFFICIENT_BALANCE",
+      message: "Smart contract panicked: ERR_INSUFFICIENT_BALANCE",
+    }));
+    await runDueJobs(b, jobHandlers(b));
+    expect(adv.advancedBy).toBeGreaterThan(0);
+    await subs.cancelSubscription(b, c, s.id, false);
+    await deliver(record("canceled", { mandate_id: 7, by: "alice.near", refunded: "75000000" }));
+    await deliver(record("exhausted", { mandate_id: 8 }));
+
+    const render = eventRenderer("https://api.nearpay.test");
+    const subjects = new Set(b.mem.state.outbox.map((e) => e.subject));
+    for (const want of [
+      "evt.billing.mandate.activated",
+      "evt.billing.mandate.unlinked",
+      "evt.billing.mandate.collected",
+      "evt.billing.mandate.updated",
+      "evt.billing.mandate.insufficient_funds",
+      "evt.billing.mandate.released",
+      "evt.billing.mandate.canceled",
+      "evt.billing.mandate.exhausted",
+    ] as const)
+      expect(subjects.has(want), want).toBe(true);
+    for (const e of b.mem.state.outbox) {
+      const r = SUBJECTS[e.subject as keyof typeof SUBJECTS].object.safeParse(render(e.object));
+      expect(r.success, `${e.subject}: ${r.success ? "" : JSON.stringify(r.error.issues[0])}`).toBe(true);
+    }
   });
 });

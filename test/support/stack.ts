@@ -1,10 +1,11 @@
 /**
  * Integration harness: Postgres provisioned like nearpay-deploy (migrator owns the database, the app role
- * has DML only); the real `api` and `worker` from the factories `main.ts` uses; payments, identity and
- * rails mocked from the spec (`mockPeer`); NATS for events when a test asks for the worker.
+ * has DML only); the real `api` and `worker` from the factories `main.ts` uses; payments, identity, rails
+ * and the sandbox vault stand-in (NEAR JSON-RPC + `/sim/vault/*`, answered with the spec's vault vectors)
+ * mocked from the spec (`mockPeer`); NATS for events when a test asks for the worker.
  */
 import { randomBytes } from "node:crypto";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Bus, connectBus, type Envelope, publish } from "@nearpay-internal/bus";
@@ -19,6 +20,10 @@ import {
   getInternalCustomer,
   getSettlementContext,
   INTERNAL_ROUTES,
+  sandboxNearRpc,
+  sandboxVaultAdvance,
+  sandboxVaultCall,
+  sandboxVaultFtTransferCall,
 } from "@nearpay-internal/spec";
 import {
   account,
@@ -39,6 +44,7 @@ import {
   testServiceToken,
   USDC_NEAR,
 } from "@nearpay-internal/testing";
+import bs58 from "bs58";
 import type { Billing } from "../../src/app/ports.js";
 import { createApi, createWorker } from "../../src/app/services.js";
 import type { WorkerConfig } from "../../src/config.js";
@@ -80,6 +86,10 @@ export interface Stack {
   readonly payments: MockPeer;
   readonly identity: MockPeer;
   readonly rails: MockPeer;
+  /** The sandbox vault stand-in (NEAR JSON-RPC and `/sim/vault/*`). */
+  readonly sandbox: MockPeer;
+  /** Knobs of the stand-in: `next_collect_at` per mandate (ns; absent = due), the next `collect` failure. */
+  readonly vault: { nextCollectAt: Map<number, string | null>; collectFailure: string | null; sentTx: string[] };
   readonly sessions: Map<string, MockSession>;
   readonly customers: Map<string, MockCustomer>;
   /** What `expireInvoiceCheckoutSession` does next. */
@@ -102,6 +112,109 @@ export interface Stack {
 
 export interface StackOptions {
   worker?: boolean;
+}
+
+/** The sandbox vault stand-in (NEAR JSON-RPC + `/sim/vault/*`), answered with the spec's vault vectors. */
+export async function startSandboxMock(): Promise<{ sandbox: MockPeer; vault: Stack["vault"] }> {
+  const V = JSON.parse(readFileSync(new URL("../fixtures/vault.json", import.meta.url), "utf8")) as {
+    views: { method: string; args: Record<string, unknown>; result_json: string }[];
+  };
+  const viewOf = (method: string) => V.views.find((v) => v.method === method)?.result_json ?? "null";
+  const vault = {
+    nextCollectAt: new Map<number, string | null>(),
+    collectFailure: null as string | null,
+    sentTx: [] as string[],
+  };
+  const hash32 = () => bs58.encode(randomBytes(32));
+  const nowNs = () => (BigInt(Date.now()) * 1_000_000n).toString();
+  const outcome = (o: { signer: string; receiver: string; failure?: string | null; logs?: string[] }) => {
+    const hash = hash32();
+    const bh = hash32();
+    const status = o.failure
+      ? {
+          Failure: {
+            ActionError: {
+              index: 0,
+              kind: { FunctionCallError: { ExecutionError: `Smart contract panicked: ${o.failure}` } },
+            },
+          },
+        }
+      : { SuccessValue: "dHJ1ZQ==" };
+    const out = (executor: string, logs: string[], st: unknown) => ({
+      logs,
+      receipt_ids: [],
+      gas_burnt: 1,
+      tokens_burnt: "0",
+      executor_id: executor,
+      status: st,
+    });
+    return {
+      final_execution_status: "FINAL",
+      status,
+      transaction: { signer_id: o.signer, public_key: `ed25519:${hash32()}`, nonce: 1, receiver_id: o.receiver, hash },
+      transaction_outcome: { id: hash, block_hash: bh, outcome: out(o.signer, [], { SuccessReceiptId: hash32() }) },
+      receipts_outcome: [{ id: hash32(), block_hash: bh, outcome: out("vault.sandbox.near", o.logs ?? [], status) }],
+    };
+  };
+  const sandbox = await mockPeer({ service: "sandbox", routes: INTERNAL_ROUTES });
+  sandbox.on(sandboxNearRpc, async (ctx) => {
+    const req = ctx.body as { id: string | number; method: string; params: Record<string, string> };
+    const reply = (result: unknown) => ({ jsonrpc: "2.0", id: req.id, result }) as never;
+    const block = { height: 1000, hash: hash32() };
+    if (req.method === "block") return reply({ header: { ...block, timestamp_nanosec: nowNs() } });
+    if (req.method === "query" && req.params.request_type === "view_access_key")
+      return reply({
+        nonce: 0,
+        permission: {
+          FunctionCall: { allowance: null, receiver_id: "vault.sandbox.near", method_names: ["collect"] },
+        },
+        block_height: block.height,
+        block_hash: block.hash,
+      });
+    if (req.method === "query") {
+      const method = req.params.method_name as string;
+      const args = JSON.parse(Buffer.from(req.params.args_base64 ?? "", "base64").toString("utf8") || "{}") as {
+        mandate_id?: number;
+      };
+      const json =
+        method === "next_collect_at"
+          ? JSON.stringify(
+              vault.nextCollectAt.has(args.mandate_id ?? -1) ? vault.nextCollectAt.get(args.mandate_id ?? -1) : "1",
+            )
+          : method === "get_mandate"
+            ? JSON.stringify({ status: "active" })
+            : viewOf(method);
+      return reply({
+        result: [...Buffer.from(json, "utf8")],
+        logs: [],
+        block_height: block.height,
+        block_hash: block.hash,
+      });
+    }
+    // send_tx / broadcast_tx_commit / tx: the keeper's collect
+    if (req.method !== "tx") vault.sentTx.push(req.method);
+    const failure = req.method === "tx" ? null : vault.collectFailure;
+    if (req.method !== "tx") vault.collectFailure = null;
+    return reply(outcome({ signer: "keeper.sandbox.near", receiver: "vault.sandbox.near", failure }));
+  });
+  sandbox.on(sandboxVaultFtTransferCall, async (ctx) => {
+    const b = ctx.body as { payer: string; token: string };
+    return outcome({ signer: b.payer, receiver: b.token }) as never;
+  });
+  sandbox.on(sandboxVaultCall, async (ctx) => {
+    const b = ctx.body as { signer: string };
+    return outcome({ signer: b.signer, receiver: "vault.sandbox.near" }) as never;
+  });
+  sandbox.on(sandboxVaultAdvance, async (ctx) => {
+    const b = ctx.body as { mandate_id: number; secs?: number };
+    return {
+      mandate_id: b.mandate_id,
+      clock_offset_secs: b.secs ?? 0,
+      now_ns: nowNs(),
+      next_collect_at: null,
+    } as never;
+  });
+  return { sandbox, vault };
 }
 
 export async function startStack(o: StackOptions = {}): Promise<Stack> {
@@ -237,6 +350,8 @@ export async function startStack(o: StackOptions = {}): Promise<Stack> {
     return sessionObject(s, false) as never;
   });
 
+  const { sandbox, vault } = await startSandboxMock();
+
   const config: WorkerConfig = {
     env: "test",
     logLevel: (process.env.NP_TEST_LOG ?? "silent") as never,
@@ -260,6 +375,7 @@ export async function startStack(o: StackOptions = {}): Promise<Stack> {
     vaultContract: "v1.vault.nearpay.near",
     nearRpcUrls: ["http://127.0.0.1:9/near-rpc"],
     testVaultContract: "vault.sandbox.near",
+    sandboxBaseUrl: sandbox.url,
     testKeeperAccount: "keeper.sandbox.near",
     vaultUsdTokens: ["17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1", "usdt.tether-token.near"],
     vaultTokens: ["17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1", "usdt.tether-token.near"],
@@ -296,6 +412,8 @@ export async function startStack(o: StackOptions = {}): Promise<Stack> {
     payments,
     identity,
     rails,
+    sandbox,
+    vault,
     sessions,
     customers,
     get expireMode() {
@@ -369,7 +487,7 @@ export async function startStack(o: StackOptions = {}): Promise<Stack> {
       await worker?.stop().catch(() => {});
       await api.stop().catch(() => {});
       await bus?.close().catch(() => {});
-      for (const m of [payments, identity, rails]) await m.stop().catch(() => {});
+      for (const m of [payments, identity, rails, sandbox]) await m.stop().catch(() => {});
       await admin.close();
       await nats?.stop().catch(() => {});
       await pg.stop().catch(() => {});

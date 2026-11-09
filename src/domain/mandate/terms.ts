@@ -6,7 +6,7 @@
  * reason (the contract cannot refuse payer-signed terms; a payer-edited `fee_bps` must never bypass the
  * fee). Pure.
  */
-import { VAULT_LIMITS, vaultPeriodSecs, vaultSplit } from "../../spec-0.4.0.js";
+import { VAULT_LIMITS, vaultPeriodSecs, vaultSplit } from "@nearpay/spec";
 import type { Interval } from "../price/price.js";
 import { DomainError, type Pricing } from "../shared.js";
 import type { Subscription } from "../subscription/subscription.js";

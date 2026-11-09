@@ -857,6 +857,7 @@ function txAdapter(tx: Tx, render: EventRenderer): BillingTx {
           if (subscription) b = b.where("subscription_id", "=", subscription);
           if (q.dueDate?.gte !== undefined) b = b.where("due_date", ">=", ts(q.dueDate.gte));
           if (q.dueDate?.lte !== undefined) b = b.where("due_date", "<=", ts(q.dueDate.lte));
+          if (q.collectionMethod !== undefined) b = b.where("collection_method", "=", q.collectionMethod);
           return b;
         });
         return { data: await invoicesWithLines(tx, rows), hasMore: rows.hasMore ?? false };

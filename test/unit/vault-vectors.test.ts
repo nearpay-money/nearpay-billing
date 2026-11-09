@@ -3,21 +3,21 @@
  * strings; Phase A reads the copy in `test/fixtures/vault.json`, Phase B the published package file).
  */
 import { readFileSync } from "node:fs";
+import {
+  formatVaultEventLog,
+  parseVaultEventLog,
+  type VaultEvent,
+  vaultErrorCodeOf,
+  vaultPeriodSecs,
+  vaultSplit,
+} from "@nearpay/spec";
+import { VAULT_KEEPER_ON_TX_FAILURE } from "@nearpay-internal/spec";
 import { describe, expect, it } from "vitest";
 import { createdData } from "../../src/app/vault-events.js";
 import { createMandateMsg, topUpMsg } from "../../src/domain/mandate/funding.js";
 import { RULES } from "../../src/domain/mandate/keeper.js";
 import type { Terms } from "../../src/domain/mandate/terms.js";
 import { classifyOutcome } from "../../src/infra/near/vault.js";
-import {
-  formatVaultEventLog,
-  parseVaultEventLog,
-  VAULT_KEEPER_ON_TX_FAILURE,
-  type VaultEvent,
-  vaultErrorCodeOf,
-  vaultPeriodSecs,
-  vaultSplit,
-} from "../../src/spec-0.4.0.js";
 
 const V = JSON.parse(readFileSync(new URL("../fixtures/vault.json", import.meta.url), "utf8")) as {
   events: { case: string; event: VaultEvent; log: string }[];

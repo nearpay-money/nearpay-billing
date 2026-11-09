@@ -11,7 +11,7 @@ import {
   NearCallFunctionResult,
   NearFinalExecutionOutcome,
   type NearRpcRequest,
-} from "../../spec-0.4.0.js";
+} from "@nearpay-internal/spec";
 
 export class NearRpcError extends Error {
   constructor(

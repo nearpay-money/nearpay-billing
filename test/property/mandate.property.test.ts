@@ -6,6 +6,8 @@
  * - keeper: fallback exactly at 5 failures or 24 h; never a second collect while one is pending;
  * - an invoice is `paid` only with evidence (payment intent or vault collection).
  */
+
+import { vaultSplit } from "@nearpay/spec";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
@@ -28,7 +30,6 @@ import {
   type Mandate,
 } from "../../src/domain/mandate/mandate.js";
 import { computeTerms, decideLink, fromTokenUnitsCeil, toTokenUnits } from "../../src/domain/mandate/terms.js";
-import { vaultSplit } from "../../src/spec-0.4.0.js";
 import { SCOPE, T0 } from "../support/fixtures.js";
 import { autoDebitSub, created, linkInput, mandate, meta, termsInput } from "../support/mandates.js";
 

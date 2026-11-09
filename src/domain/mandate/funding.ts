@@ -12,7 +12,7 @@ import {
   VAULT_LIMITS,
   VaultCreateMandateArgs,
   vaultMsgJson,
-} from "../../spec-0.4.0.js";
+} from "@nearpay/spec";
 import { DomainError } from "../shared.js";
 import type { Terms } from "./terms.js";
 

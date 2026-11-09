@@ -4,6 +4,8 @@
  * evidence, insufficient funds, collect failures, short share, late/unapplied collections), parking, release,
  * amount lock, test helpers and the notification context.
  */
+
+import type { VaultEvent } from "@nearpay/spec";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as catalog from "../../src/app/catalog.js";
 import type { Ctx } from "../../src/app/commit.js";
@@ -16,7 +18,6 @@ import type { Invoice } from "../../src/domain/invoice/invoice.js";
 import type { Mandate } from "../../src/domain/mandate/mandate.js";
 import { DAY, DomainError } from "../../src/domain/shared.js";
 import type { Subscription } from "../../src/domain/subscription/subscription.js";
-import type { VaultEvent } from "../../src/spec-0.4.0.js";
 import { jobHandlers } from "../../src/workers/jobs.js";
 import { LIVE, SCOPE, T0 } from "../support/fixtures.js";
 import { runDueJobs, type TestBilling, testBilling } from "../support/memory.js";

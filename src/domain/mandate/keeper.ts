@@ -4,7 +4,8 @@
  * invoice is paid only by the forwarded `collected` event (INV-2). While a sent `collect` has no forwarded
  * outcome yet, no other is sent for the mandate: a second one could collect a further period. Pure.
  */
-import { VAULT_KEEPER_ON_TX_FAILURE, VAULT_KEEPER_RULES, type VaultErrorCode } from "../../spec-0.4.0.js";
+import type { VaultErrorCode } from "@nearpay/spec";
+import { VAULT_KEEPER_ON_TX_FAILURE, VAULT_KEEPER_RULES } from "@nearpay-internal/spec";
 import { type Invoice, isPayable } from "../invoice/invoice.js";
 import { isCollecting, type KeeperState, type Mandate } from "./mandate.js";
 

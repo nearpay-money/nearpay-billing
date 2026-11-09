@@ -1,5 +1,5 @@
 /**
- * Spec route bindings (lld/billing.md §5, §13; spec 0.3.1). Authentication, scopes, roles and automatic
+ * Spec route bindings (lld/billing.md §5, §13, §14; spec 0.4.0). Authentication, scopes, roles and automatic
  * idempotency (merchant POSTs with `Idempotency-Key`) are enforced from the spec by the service bootstrap;
  * the hosted-invoice routes check the invoice secret in the use cases. Domain errors become the public
  * error envelope with the same code.
@@ -11,6 +11,7 @@ import {
   createInvoice,
   createPrice,
   createProduct,
+  createPublicInvoiceMandateFunding,
   createPublicInvoiceSession,
   createSubscription,
   createTaxRate,
@@ -18,19 +19,26 @@ import {
   finalizeInvoice,
   getInvoice,
   getInvoicePdf,
+  getMandate,
   getPrice,
   getProduct,
   getPublicInvoice,
+  getPublicInvoiceMandate,
   getPublicInvoicePdf,
   getSubscription,
   getTaxRate,
   listInvoices,
+  listMandates,
   listPrices,
   listProducts,
   listSubscriptions,
   listTaxRates,
   markInvoiceUncollectible,
+  prepareMandate,
+  prepareMandateCancel,
   sendInvoice,
+  simulateMandateFunding,
+  simulateMandatePayerAction,
   updateInvoice,
   updatePrice,
   updateProduct,
@@ -40,12 +48,21 @@ import {
 } from "@nearpay/spec";
 import { toUuid } from "@nearpay-internal/ids";
 import { ApiError, implement, type RequestContext, type RouteBinding, respond } from "@nearpay-internal/service";
-import { getInvoiceNotificationContext, getSubscriptionNotificationContext } from "@nearpay-internal/spec";
+import {
+  getInvoiceNotificationContext,
+  getMandateNotificationContext,
+  getSubscriptionNotificationContext,
+} from "@nearpay-internal/spec";
 import * as catalog from "../app/catalog.js";
 import type { Ctx } from "../app/commit.js";
 import * as hosted from "../app/hosted.js";
 import * as invoices from "../app/invoices.js";
-import { invoiceNotificationContext, subscriptionNotificationContext } from "../app/notification.js";
+import * as mandates from "../app/mandates.js";
+import {
+  invoiceNotificationContext,
+  mandateNotificationContext,
+  subscriptionNotificationContext,
+} from "../app/notification.js";
 import * as pdf from "../app/pdf.js";
 import type { Billing, ListQuery, Page } from "../app/ports.js";
 import * as subs from "../app/subscriptions.js";
@@ -54,13 +71,19 @@ import type { LineInput } from "../domain/invoice/lines.js";
 import { DomainError } from "../domain/shared.js";
 import type { Subscription } from "../domain/subscription/subscription.js";
 import {
+  cancelInstructionsView,
   clockAdvanceView,
+  fundingView,
   invoiceNotificationView,
   invoicePaymentSessionView,
   invoiceView,
+  mandateNotificationView,
+  mandateView,
   priceView,
   productView,
   publicInvoiceView,
+  publicMandateView,
+  simulationView,
   subscriptionNotificationView,
   subscriptionView,
   taxRateView,
@@ -78,9 +101,7 @@ export function merchant(ctx: RequestContext): Ctx {
 }
 
 export function toApiError(e: DomainError): ApiError {
-  // `as never`: 0.4.0 codes (auto_debit_unavailable, vault_cap_exceeded) are unknown to the 0.3.1 kit typings
-  // until the spec bump (Phase B removes the cast)
-  return new ApiError(e.code as never, {
+  return new ApiError(e.code, {
     params: { ...e.params },
     ...(e.param ? { param: e.param } : {}),
     ...(e.upstreamMessage ? { message: e.upstreamMessage } : {}),
@@ -333,6 +354,7 @@ export function billingRoutes(b: Billing, env: string): RouteBinding[] {
           customer: q.customer,
           subscription: q.subscription,
           dueDate: { gte: q["due_date[gte]"], lte: q["due_date[lte]"] },
+          collectionMethod: q.collection_method,
         }),
       );
       return list("/v1/invoices", page, inv);
@@ -377,7 +399,7 @@ export function billingRoutes(b: Billing, env: string): RouteBinding[] {
 
     // ---- hosted invoice (anonymous; invoice secret header)
     implement(getPublicInvoice, async (ctx) =>
-      publicInvoiceView(await run(() => hosted.getPublicInvoice(b, ctx.params.id, secretOf(ctx)))),
+      publicInvoiceView(await run(() => mandates.getHostedInvoice(b, ctx.params.id, secretOf(ctx)))),
     ),
     implement(createPublicInvoiceSession, async (ctx) => {
       const s = await run(() =>
@@ -398,6 +420,7 @@ export function billingRoutes(b: Billing, env: string): RouteBinding[] {
       const s = await run(() =>
         subs.createSubscription(b, merchant(ctx), {
           customerId: body.customer,
+          collectionMethod: body.collection_method,
           items: body.items.map((i) => ({ priceId: i.price, quantity: i.quantity, taxRateIds: i.tax_rates })),
           daysUntilDue: body.days_until_due,
           trialPeriodDays: body.trial_period_days,
@@ -438,6 +461,7 @@ export function billingRoutes(b: Billing, env: string): RouteBinding[] {
             ? { reminderDays: body.dunning.reminder_days, onExhausted: body.dunning.on_exhausted }
             : undefined,
           cancelAtPeriodEnd: body.cancel_at_period_end,
+          collectionMethod: body.collection_method,
           description: body.description,
           settlementDestinationId: body.settlement_destination,
           metadata: body.metadata,
@@ -448,6 +472,79 @@ export function billingRoutes(b: Billing, env: string): RouteBinding[] {
     implement(cancelSubscription, async (ctx) =>
       subView(
         await run(() => subs.cancelSubscription(b, merchant(ctx), ctx.params.id, ctx.body.at_period_end ?? false)),
+      ),
+    ),
+
+    // ---- mandates (Stage 4, lld/billing.md §5, §14): rows come from vault events only; prepare is side-effect free
+    implement(prepareMandate, async (ctx) => {
+      const body = ctx.body;
+      return fundingView(
+        await run(() =>
+          mandates.prepareMandate(b, merchant(ctx), {
+            subscriptionId: body.subscription,
+            payer: body.payer,
+            token: body.token,
+            periods: body.periods,
+          }),
+        ),
+      );
+    }),
+    implement(getMandate, async (ctx) =>
+      mandateView(await run(() => mandates.getMandate(b, merchant(ctx), ctx.params.id))),
+    ),
+    implement(listMandates, async (ctx) => {
+      const q = ctx.query;
+      const page = await run(() =>
+        mandates.listMandates(b, merchant(ctx), {
+          ...listQuery(q),
+          subscription: q.subscription,
+          customer: q.customer,
+          status: q.status,
+          linkStatus: q.link_status,
+          payer: q.payer,
+        }),
+      );
+      return list("/v1/mandates", page, mandateView);
+    }),
+    implement(prepareMandateCancel, async (ctx) => {
+      const r = await run(() => mandates.prepareMandateCancel(b, merchant(ctx), ctx.params.id));
+      return cancelInstructionsView(r.mandate, r.transaction);
+    }),
+    implement(createPublicInvoiceMandateFunding, async (ctx) =>
+      fundingView(
+        await run(() =>
+          mandates.createPublicInvoiceMandateFunding(b, ctx.params.id, secretOf(ctx), {
+            payer: ctx.body.payer,
+            token: ctx.body.token,
+            periods: ctx.body.periods,
+          }),
+        ),
+      ),
+    ),
+    implement(getPublicInvoiceMandate, async (ctx) =>
+      publicMandateView(await run(() => mandates.getPublicInvoiceMandate(b, ctx.params.id, secretOf(ctx)))),
+    ),
+    implement(simulateMandateFunding, async (ctx) => {
+      const body = ctx.body;
+      return simulationView(
+        await run(() =>
+          mandates.simulateMandateFunding(b, merchant(ctx), {
+            subscriptionId: body.subscription,
+            payer: body.payer,
+            token: body.token,
+            periods: body.periods,
+          }),
+        ),
+      );
+    }),
+    implement(simulateMandatePayerAction, async (ctx) =>
+      simulationView(
+        await run(() =>
+          mandates.simulateMandatePayerAction(b, merchant(ctx), ctx.params.id, {
+            action: ctx.body.action,
+            periods: ctx.body.periods,
+          }),
+        ),
       ),
     ),
 
@@ -464,6 +561,9 @@ export function billingRoutes(b: Billing, env: string): RouteBinding[] {
     ),
     implement(getSubscriptionNotificationContext, async (ctx) =>
       subscriptionNotificationView(await run(() => subscriptionNotificationContext(b, ctx.params.id))),
+    ),
+    implement(getMandateNotificationContext, async (ctx) =>
+      mandateNotificationView(await run(() => mandateNotificationContext(b, ctx.params.id))),
     ),
   ];
 }

@@ -7,9 +7,15 @@
 import type {
   Invoice as InvoiceObj,
   InvoicePaymentSession,
+  MandateCancelInstructions,
+  MandateFundingInstructions,
+  Mandate as MandateObj,
+  MandateSimulation,
+  NearTransactionRequest,
   Price as PriceObj,
   Product as ProductObj,
   PublicInvoice,
+  PublicMandate,
   SubscriptionClockAdvance,
   Subscription as SubscriptionObj,
   TaxRate as TaxRateObj,
@@ -20,6 +26,7 @@ import { fiatToJson, toBaseUnits } from "@nearpay-internal/money";
 import type {
   InvoiceNotificationContext,
   InvoiceReminderEvent,
+  MandateNotificationContext,
   SubscriptionNotificationContext,
 } from "@nearpay-internal/spec";
 import type { InvoicePaymentSessionData, PublicInvoiceData } from "../app/hosted.js";
@@ -49,15 +56,6 @@ import type { Product } from "../domain/product/product.js";
 import type { Pricing } from "../domain/shared.js";
 import type { Subscription } from "../domain/subscription/subscription.js";
 import { ppmToPercentage, type TaxRate } from "../domain/tax-rate/tax-rate.js";
-import type {
-  MandateCancelInstructions,
-  MandateFundingInstructions,
-  MandateNotificationContext,
-  Mandate as MandateObj,
-  MandateSimulation,
-  NearTransactionRequest,
-  PublicMandate,
-} from "../spec-0.4.0.js";
 
 type PublicInvoiceObj = z.infer<typeof PublicInvoice>;
 type InvoicePaymentSessionObj = z.infer<typeof InvoicePaymentSession>;
@@ -350,6 +348,7 @@ export function publicInvoiceView(d: PublicInvoiceData): PublicInvoiceObj {
         }
       : null,
     checkout_session: inv.session ? pid<"cs">(inv.session.id) : null,
+    auto_debit: publicAutoDebitView(d.autoDebit ?? null),
   };
 }
 

@@ -1,5 +1,5 @@
 /**
- * Consumed subjects (lld/billing.md §6, spec 0.3.0 catalogue) → use cases. Each use case runs one
+ * Consumed subjects (lld/billing.md §6, spec 0.4.0 catalogue) → use cases. Each use case runs one
  * transaction with the inbox dedupe (INV-4). Objects are parsed with the spec schemas; an unparsable event
  * throws (the bus redelivers, then dead-letters). The scope comes from the envelope (`account_id`,
  * `livemode`), never from the object alone (INV-8).
@@ -10,6 +10,7 @@
  * | evt.payments.payment_intent.payment_failed | `invoice.payment_failed`; the invoice stays open |
  * | evt.payments.checkout_session.expired | forget the invoice's session (a new one opens lazily) |
  * | evt.payments.payment_intent.expired | the same, for the intent's checkout session |
+ * | evt.rails.vault.event | mandate mirror, linkage, collections (`vaultEventHandler`; parks instead of throwing) |
  */
 
 import { CheckoutSession, PaymentIntent } from "@nearpay/spec";
@@ -17,13 +18,13 @@ import type { EventHandler } from "@nearpay-internal/bus";
 import type { Envelope } from "@nearpay-internal/db";
 import { deadLetterSink, type Kysely } from "@nearpay-internal/db";
 import type { Subject } from "@nearpay-internal/spec";
+import { VaultEventRecord as VaultEventRecordSchema } from "@nearpay-internal/spec";
 import { onCheckoutSessionExpired, onPaymentIntentFailed, onPaymentIntentSucceeded } from "../app/payment-events.js";
 import type { Billing } from "../app/ports.js";
 import { onVaultEvent, type VaultEventRecord } from "../app/vault-events.js";
 import type { IntentFacts } from "../domain/invoice/payment.js";
 import type { Scope } from "../domain/shared.js";
 import type { DB } from "../infra/db/schema.js";
-import { VaultEventRecord as VaultEventRecordSchema } from "../spec-0.4.0.js";
 
 function scopeOf(e: Envelope): Scope {
   if (!e.account_id || e.livemode === null) throw new Error(`${e.subject} ${e.id} has no account scope`);
@@ -79,6 +80,7 @@ export function billingHandlers(b: Billing): Partial<Record<Subject, EventHandle
         object: { id: cs.id, invoiceId: cs.invoice },
       });
     },
+    "evt.rails.vault.event": vaultEventHandler(b),
   };
 }
 
@@ -86,7 +88,8 @@ export function billingHandlers(b: Billing): Partial<Record<Subject, EventHandle
  * `evt.rails.vault.event` (spec 0.4.0, lld/billing.md §6): the envelope has no account (`account_id` null)
  * and `livemode` = the vault's mode; the scope comes from the mandate / the subscription its `ext_ref`
  * names. A payload that does not parse is parked, never thrown (the stream must not block on one event).
- * Registered in `billingHandlers` with the 0.4.0 bump (Phase B: the subject is not in the 0.3.1 catalogue).
+ * Dedupe is on `receipt_id:log_index` (`vault_events`), so a re-forwarded event with a new envelope id is
+ * still applied once.
  */
 export function vaultEventHandler(b: Billing): EventHandler {
   return async (e) => {

@@ -88,10 +88,10 @@ nearpay-billing/
 Stage 3 (step 3.2): products, prices, tax rates, invoices (hosted page, PDF), `send_invoice` subscriptions and
 dunning are implemented against `@nearpay/spec` 0.3.0 (kit 0.2.1), test clock on 0.3.1.
 
-Stage 4 (step 4.2, auto-debit) — Phase A: mandates mirrored from vault events (linkage rule, parking), prepare /
-cancel / hosted funding / payer view, test helpers on the sandbox stand-in, the keeper, release and amount lock,
-built against the spec 0.4.0 source (`src/spec-0.4.0.ts`, a verbatim placeholder removed with the bump). Route and
-consumer bindings, the NATS integration suite and the contract test follow with `@nearpay/spec` 0.4.0.
+Stage 4 (step 4.2, auto-debit) on `@nearpay/spec` 0.4.0 (kit 0.3.1): mandates mirrored from `evt.rails.vault.event`
+(strict linkage, parking + retry), `prepare` / `prepare_cancel` / list / get, the hosted invoice's auto-debit setup and
+payer view, test helpers on the sandbox stand-in, the keeper (`mandate.collect`, §7.1 outcomes), `auto_debit`
+invoices and subscriptions, release and amount lock, mandate events and notification context.
 
 ## Built with
 

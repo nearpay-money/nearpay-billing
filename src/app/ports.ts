@@ -2,6 +2,8 @@
  * Ports of the billing use cases (hexagonal: `src/infra` implements them; tests use in-memory fakes).
  * Domain objects cross these ports; contract (spec) shapes appear only in the adapters and `src/api`.
  */
+
+import type { VaultErrorCode } from "@nearpay/spec";
 import type { EnvelopeCipher } from "@nearpay-internal/db";
 import type { Subject } from "@nearpay-internal/spec";
 import type { Reminder } from "../domain/dunning/dunning.js";
@@ -12,7 +14,6 @@ import type { Product } from "../domain/product/product.js";
 import type { Pricing, Scope } from "../domain/shared.js";
 import type { Subscription } from "../domain/subscription/subscription.js";
 import type { TaxRate } from "../domain/tax-rate/tax-rate.js";
-import type { VaultErrorCode } from "../spec-0.4.0.js";
 
 /** Mandate subjects (spec 0.4.0 `SUBJECTS`, §14 d10; placeholder union until the bump). */
 export const MANDATE_SUBJECTS = [
@@ -98,6 +99,7 @@ export interface InvoiceListQuery extends ListQuery {
   readonly customer?: string | undefined;
   readonly subscription?: string | undefined;
   readonly dueDate?: { readonly gte?: number | undefined; readonly lte?: number | undefined } | undefined;
+  readonly collectionMethod?: string | undefined;
 }
 
 export interface InvoiceRepo {

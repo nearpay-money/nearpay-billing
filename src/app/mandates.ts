@@ -5,6 +5,8 @@
  * vault stand-in, the notification context, and the subscription hooks (release, amount lock, auto-debit
  * invoices). Mandate rows are created only from forwarded vault events (`./vault-events.ts`).
  */
+
+import { EVENT_JSON_PREFIX, ONE_YOCTO, parseVaultEventLog, VAULT_GAS, vaultErrorCodeOf } from "@nearpay/spec";
 import { type Invoice, isPayable } from "../domain/invoice/invoice.js";
 import { priceLines } from "../domain/invoice/lines.js";
 import { fallbackToSendInvoice } from "../domain/mandate/collection.js";
@@ -33,9 +35,8 @@ import {
   type Subscription,
   withMandate,
 } from "../domain/subscription/subscription.js";
-import { EVENT_JSON_PREFIX, ONE_YOCTO, parseVaultEventLog, VAULT_GAS, vaultErrorCodeOf } from "../spec-0.4.0.js";
 import { type Ctx, type Meta, saveInvoice, saveMandate, saveSubscription } from "./commit.js";
-import { checkSecret } from "./hosted.js";
+import { checkSecret, getPublicInvoice, type PublicInvoiceData } from "./hosted.js";
 import { clockS, loadCatalog, nowS } from "./invoices.js";
 import type { AssetFacts, Billing, BillingTx, MandateListQuery, MerchantFacts, Page } from "./ports.js";
 
@@ -294,6 +295,12 @@ export async function getPublicInvoiceMandate(
   const m = subId ? await b.store.transaction((tx) => tx.mandates.newestFor(inv, subId)) : undefined;
   if (!m) throw missing("mandate", invoiceId);
   return { mandate: m, collecting: isCollecting(m), tx: payerTransactions(m) };
+}
+
+/** `getPublicInvoice` with `PublicInvoice.auto_debit` (the hosted page offers auto-debit setup, §14 d6, d8). */
+export async function getHostedInvoice(b: Billing, id: string, secret: string): Promise<PublicInvoiceData> {
+  const d = await getPublicInvoice(b, id, secret);
+  return { ...d, autoDebit: await publicAutoDebit(b, d.invoice) };
 }
 
 /** `PublicInvoice.auto_debit` for invoices of `auto_debit` subscriptions (null otherwise). */

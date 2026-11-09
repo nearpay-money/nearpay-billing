@@ -29,6 +29,7 @@ import {
 } from "../domain/mandate/terms.js";
 import { DomainError, missing, type Pricing, type Scope, stateConflict } from "../domain/shared.js";
 import {
+  type ClockTarget,
   hasEnded,
   periodLines,
   periodOf,
@@ -459,12 +460,23 @@ export async function assertAmountUnchanged(tx: BillingTx, cur: Subscription, ne
   if (before !== after) throw stateConflict("subscription", "with an active mandate for a fixed amount per period");
 }
 
-/** Advances the stand-in clock of the subscription's linked mandate with the billing clock (§14 d12). */
-export async function advanceMandateClock(b: Billing, sub: Subscription, delta: number): Promise<void> {
+/**
+ * Advances the stand-in clock of the subscription's linked mandate with the billing clock (§14 d12). On a `renewal`
+ * it also moves it up to the mandate's `next_collect_at`: billing periods are calendar months, vault periods average
+ * months (2 629 746 s), so a renewal can come up to ~1.5 days before the vault period is due — on real time the keeper
+ * just waits for it, on the test clock that wait would be real time.
+ */
+export async function advanceMandateClock(
+  b: Billing,
+  sub: Subscription,
+  delta: number,
+  target?: ClockTarget,
+): Promise<void> {
   const m = await b.store.transaction((tx) => tx.mandates.collectingFor(sub, sub.id));
   if (!m || m.livemode) return;
   try {
     await b.sandbox.advance(m.onchainId, delta);
+    if (target === "renewal") await b.sandbox.advance(m.onchainId);
   } catch (e) {
     b.log.error({ mandate: m.id, err: String(e) }, "could not advance the sandbox vault clock of the linked mandate");
   }

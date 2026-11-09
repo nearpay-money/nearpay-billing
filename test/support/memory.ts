@@ -643,7 +643,7 @@ export class FakeSandbox {
   calls: { kind: string; body: unknown }[] = [];
   /** Next outcome (default: accepted with no logs). */
   outcomes: SimOutcome[] = [];
-  advanced: { onchainId: number; secs: number }[] = [];
+  advanced: { onchainId: number; secs?: number }[] = [];
   readonly port: SandboxVaultPort = {
     ftTransferCall: async (o) => {
       this.calls.push({ kind: "ft_transfer_call", body: o });
@@ -654,7 +654,7 @@ export class FakeSandbox {
       return this.outcomes.shift() ?? { txHash: "simtx", failure: null, vaultLogs: [] };
     },
     advance: async (onchainId, secs) => {
-      this.advanced.push({ onchainId, secs });
+      this.advanced.push(secs === undefined ? { onchainId } : { onchainId, secs });
     },
   };
 }

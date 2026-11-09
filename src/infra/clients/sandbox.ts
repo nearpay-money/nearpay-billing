@@ -66,7 +66,9 @@ export function sandboxVault(o: PeerOptions & { baseUrl: string; vaultContract: 
       return simOutcome(o.vaultContract, r as NearFinalExecutionOutcome);
     },
     async advance(onchainId, secs) {
-      await c.call(sandboxVaultAdvance, { body: { mandate_id: onchainId, secs } as never });
+      await c.call(sandboxVaultAdvance, {
+        body: (secs === undefined ? { mandate_id: onchainId } : { mandate_id: onchainId, secs }) as never,
+      });
     },
   };
 }

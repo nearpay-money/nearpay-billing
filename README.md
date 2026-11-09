@@ -58,7 +58,7 @@ Secrets come only from `NP_<NAME>_FILE` (Docker secrets); everything else from `
 | `NP_PRICING_CURRENCIES`                                                                    | api         | fiat pricing currencies (comma list, same as payments)                                |
 | `NP_PUBLIC_SESSIONS_PER_CLIENT`, `NP_PUBLIC_SESSIONS_PER_INVOICE`                          | api         | hosted-page session creations per minute (10, 30)                                     |
 
-Stage 4 (auto-debit, `lld/billing.md` v1.8 §8, §15 d14): live vault `NP_VAULT_CONTRACT` (`v1.vault.nearpay.near`),
+Stage 4 (auto-debit, `lld/billing.md` v1.11 §8, §15 d14): live vault `NP_VAULT_CONTRACT` (`v1.vault.nearpay.near`),
 `NP_NEAR_RPC_URLS`, keeper `NP_KEEPER_ACCOUNT` + `NP_KEEPER_KEY_FILE` (secret file; a funded NEAR account used only for
 gas, function-call key for the vault — a full-access key is refused; without it the live keeper does not collect);
 test mode `NP_SANDBOX_BASE_URL` (the vault stand-in, `/sim/near-rpc`), `NP_TEST_VAULT_CONTRACT`

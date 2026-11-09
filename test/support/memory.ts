@@ -672,6 +672,8 @@ export interface TestBilling extends Billing {
   readonly fakeSandbox: FakeSandbox;
   readonly objectsMap: Map<string, Uint8Array>;
   readonly logs: { level: string; msg: string; o: object }[];
+  /** Keeper collect outcomes counted (`<outcome>:<livemode>`). */
+  readonly keeperOutcomes: string[];
 }
 
 /** Use cases wired to fakes; `store` defaults to the in-memory store (the Postgres suite passes its own). */
@@ -681,6 +683,7 @@ export function testBilling(startMs: number, store?: BillingStore): TestBilling 
   const clock = { ms: startMs };
   const objectsMap = new Map<string, Uint8Array>();
   const logs: TestBilling["logs"] = [];
+  const keeperOutcomes: string[] = [];
   const fakeVault = new FakeVault();
   const fakeSandbox = new FakeSandbox();
   let ids = 0;
@@ -690,6 +693,8 @@ export function testBilling(startMs: number, store?: BillingStore): TestBilling 
     clock,
     objectsMap,
     logs,
+    keeperOutcomes,
+    metrics: { keeperCollect: (o, live) => keeperOutcomes.push(`${o}:${live}`) },
     merchantFacts: MERCHANT,
     fakeVault,
     fakeSandbox,

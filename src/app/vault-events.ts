@@ -347,9 +347,11 @@ async function onMandateEvent(b: Billing, i: VaultEventInput): Promise<VaultEven
       }
       case "collect_failed":
         await onCollectFailed(b, tx, m, meta, now, why);
+        b.metrics?.keeperCollect("collect_failed", m.livemode);
         return "applied";
       case "collected":
         await onCollected(b, tx, m, e.data[0], meta, now, why, peers as CollectedPeers);
+        b.metrics?.keeperCollect("collected", m.livemode);
         return "applied";
       case "canceled": {
         const next = applyCanceled(m, e.data[0].by, BigInt(e.data[0].refunded), meta, now);

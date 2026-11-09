@@ -44,3 +44,16 @@ describe("server-stage origins", () => {
     expect(() => checkServerConfig({ ...ok, trustedProxies: ["nope"] })).toThrow(/NP_TRUSTED_PROXIES/);
   });
 });
+
+describe("keeper collect outcome metric", () => {
+  it("maps each §7.1 failure action to an outcome label", async () => {
+    const { failureOutcome } = await import("../../src/keeper/collect.js");
+    expect(failureOutcome("fallback_insufficient")).toBe("insufficient");
+    expect(failureOutcome("await_outcome")).toBe("in_flight");
+    expect(failureOutcome("retry_at_next_collect_at")).toBe("not_due");
+    expect(failureOutcome("alert_gas")).toBe("gas");
+    expect(failureOutcome("reconcile")).toBe("other");
+    expect(failureOutcome("retry")).toBe("other");
+    expect(failureOutcome("case")).toBe("other");
+  });
+});

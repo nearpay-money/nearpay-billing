@@ -4,6 +4,7 @@
  * the hosted-invoice routes check the invoice secret in the use cases. Domain errors become the public
  * error envelope with the same code.
  */
+
 import { isIP } from "node:net";
 import {
   advanceSubscriptionClock,
@@ -66,6 +67,7 @@ import {
 import * as pdf from "../app/pdf.js";
 import type { Billing, ListQuery, Page } from "../app/ports.js";
 import * as subs from "../app/subscriptions.js";
+import { type ClientIpRule, clientIpRule, resolveClientIp } from "../domain/client-ip.js";
 import type { Invoice } from "../domain/invoice/invoice.js";
 import type { LineInput } from "../domain/invoice/lines.js";
 import { DomainError } from "../domain/shared.js";
@@ -147,9 +149,16 @@ const header = (ctx: RequestContext, name: string): string | undefined => {
   return (Array.isArray(v) ? v[0] : v) || undefined;
 };
 
-/** The client's network (`a.b.c.0/24`, IPv6 /64) by identity's rule: CF-Connecting-IP on the server, else XFF. */
-export function clientNetwork(env: string, cf: string | undefined, xff: string | undefined): string {
-  const ip = (env === "server" ? cf : xff?.split(",")[0])?.trim() ?? "";
+/**
+ * The client's network (`a.b.c.0/24`, IPv6 /64) by identity's rule (L-ID-07): CF-Connecting-IP on the server stage,
+ * else the rightmost untrusted X-Forwarded-For hop; forwarding headers only from a trusted proxy peer
+ * (`NP_TRUSTED_PROXIES`, domain/client-ip.ts).
+ */
+export function clientNetwork(
+  rule: ClientIpRule,
+  from: { peer?: string | undefined; cfConnectingIp?: string | undefined; xForwardedFor?: string | undefined },
+): string {
+  const ip = resolveClientIp(rule, from) ?? "";
   const v4 = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip)?.[1] ?? (isIP(ip) === 4 ? ip : null);
   if (v4) return `${v4.split(".").slice(0, 3).join(".")}.0/24`;
   if (isIP(ip) !== 6) return "unknown";
@@ -197,7 +206,7 @@ const sendPdf = (ctx: RequestContext, r: { invoice: Invoice; pdf: Uint8Array }) 
 // Bindings
 // ---------------------------------------------------------------------------------------------
 
-export function billingRoutes(b: Billing, env: string): RouteBinding[] {
+export function billingRoutes(b: Billing, env: string, ipRule: ClientIpRule = clientIpRule(env)): RouteBinding[] {
   const inv = (i: Invoice) =>
     invoiceView(i, { hostedInvoiceUrl: invoices.hostedInvoiceUrl(b, i), apiOrigin: b.settings.apiOrigin });
   const subView = async (s: Subscription) => {
@@ -405,7 +414,11 @@ export function billingRoutes(b: Billing, env: string): RouteBinding[] {
       const s = await run(() =>
         hosted.createPublicInvoiceSession(b, ctx.params.id, secretOf(ctx), {
           locale: ctx.body.locale,
-          clientNetwork: clientNetwork(env, header(ctx, "cf-connecting-ip"), header(ctx, "x-forwarded-for")),
+          clientNetwork: clientNetwork(ipRule, {
+            peer: ctx.request.socket?.remoteAddress,
+            cfConnectingIp: header(ctx, "cf-connecting-ip"),
+            xForwardedFor: header(ctx, "x-forwarded-for"),
+          }),
         }),
       );
       return invoicePaymentSessionView(s);

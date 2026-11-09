@@ -3,6 +3,7 @@
  * - `api`     merchant, hosted-invoice and internal routes, with automatic idempotency
  * - `worker`  payments-event consumers, renewal/dunning/PDF jobs, recurring jobs and the outbox relay
  */
+
 import { randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import type { KeySource } from "@nearpay-internal/auth";
@@ -39,6 +40,7 @@ import { billingRoutes } from "../api/routes.js";
 import { eventRenderer } from "../api/views.js";
 import type { ApiConfig, SharedConfig, WorkerConfig } from "../config.js";
 import { billingHandlers, deadLetters } from "../consumers/handlers.js";
+import { clientIpRule } from "../domain/client-ip.js";
 import { identityMerchant, paymentsClient, railsAssets } from "../infra/clients/peers.js";
 import { sandboxVault } from "../infra/clients/sandbox.js";
 import { MIGRATIONS_DIR } from "../infra/db/migrations.js";
@@ -198,7 +200,11 @@ export function createApi(config: ApiConfig, deps: ServiceDeps = {}): { service:
     name: "billing",
     config,
     ...(deps.keys ? { keys: deps.keys } : {}),
-    routes: billingRoutes(b.billing, config.env),
+    routes: billingRoutes(
+      b.billing,
+      config.env,
+      clientIpRule(config.env, { header: config.clientIpHeader, trustedProxies: config.trustedProxies }),
+    ),
     idempotency: idempotencyStore(b.database.db, b.billing.cipher),
     readiness: readiness(b),
   });

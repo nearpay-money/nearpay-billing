@@ -7,8 +7,10 @@
  * gas, function-call key for the vault); test mode the sandbox stand-in (`NP_TEST_VAULT_CONTRACT`,
  * `NP_SANDBOX_BASE_URL` → `/sim/near-rpc`, `NP_TEST_KEEPER_ACCOUNT`, optional `NP_TEST_KEEPER_KEY_FILE`).
  */
+
 import { baseConfigShape, list, loadConfig, secret, url } from "@nearpay-internal/service";
 import { z } from "zod";
+import { CLIENT_IP_HEADERS, clientIpRule } from "./domain/client-ip.js";
 
 const http = () => url(["http:", "https:"]);
 const nearAccount = z
@@ -27,6 +29,10 @@ const shared = {
   serviceClientSecret: secret(),
   paymentsUrl: http(),
   railsUrl: http(),
+  /** Client IP source behind the gateway (default: cf-connecting-ip on the server stage, x-forwarded-for locally). */
+  clientIpHeader: z.enum(CLIENT_IP_HEADERS).optional(),
+  /** CIDRs of the proxies in front of billing whose forwarding headers count (default: loopback + private ranges). */
+  trustedProxies: list(z.string().min(1)).optional(),
   /** Hosted invoice origin: `<origin>/i/<in_…>#<invoice secret>`. */
   payOrigin: url(["https:", "http:"]).default("https://pay.nearpay.localhost"),
   /** Public API origin (`Invoice.invoice_pdf` links). */
@@ -74,5 +80,25 @@ export type SharedConfig = z.output<z.ZodObject<typeof shared>>;
 export type ApiConfig = z.output<z.ZodObject<typeof apiShape>>;
 export type WorkerConfig = z.output<z.ZodObject<typeof workerShape>>;
 
-export const readApiConfig = (): ApiConfig => loadConfig(apiShape);
-export const readWorkerConfig = (): WorkerConfig => loadConfig(workerShape);
+/**
+ * Server-stage rules (every NP_ENV but local/test): hosted invoice and PDF links use public https origins (never a
+ * `*.localhost` default left in place by a missing variable); the client-IP proxy list parses.
+ */
+export function checkServerConfig<
+  C extends Pick<SharedConfig, "env" | "payOrigin" | "apiOrigin" | "clientIpHeader" | "trustedProxies">,
+>(c: C): C {
+  clientIpRule(c.env, { header: c.clientIpHeader, trustedProxies: c.trustedProxies });
+  if (c.env === "local" || c.env === "test") return c;
+  for (const [name, value] of [
+    ["NP_PAY_ORIGIN", c.payOrigin],
+    ["NP_API_ORIGIN", c.apiOrigin],
+  ] as const) {
+    const u = new URL(value);
+    if (u.protocol !== "https:" || u.hostname === "localhost" || u.hostname.endsWith(".localhost"))
+      throw new Error(`${name} must be a public https origin on the server stage (got ${value})`);
+  }
+  return c;
+}
+
+export const readApiConfig = (): ApiConfig => checkServerConfig(loadConfig(apiShape));
+export const readWorkerConfig = (): WorkerConfig => checkServerConfig(loadConfig(workerShape));

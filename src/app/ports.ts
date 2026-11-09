@@ -542,8 +542,24 @@ export interface BillingSettings {
 }
 
 /** Everything a use case may touch. */
+/** Keeper `collect` outcomes (§7.1) for `nearpay_billing_keeper_collect_total{outcome,livemode}`. */
+export type KeeperCollectOutcome =
+  | "collected"
+  | "collect_failed"
+  | "insufficient"
+  | "in_flight"
+  | "not_due"
+  | "gas"
+  | "other";
+
+export interface BillingMetrics {
+  keeperCollect(outcome: KeeperCollectOutcome, livemode: boolean): void;
+}
+
 export interface Billing {
   readonly store: BillingStore;
+  /** Optional (tests, ops CLI): keeper outcome counters. */
+  readonly metrics?: BillingMetrics;
   readonly payments: PaymentsPort;
   readonly merchant: MerchantPort;
   readonly assets: AssetsPort;

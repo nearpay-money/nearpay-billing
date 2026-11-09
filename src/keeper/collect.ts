@@ -10,7 +10,7 @@
 import { saveMandate } from "../app/commit.js";
 import { nowS } from "../app/invoices.js";
 import { fallbackInvoice } from "../app/mandates.js";
-import type { Billing, BillingTx, CollectTxResult } from "../app/ports.js";
+import type { Billing, BillingTx, CollectTxResult, KeeperCollectOutcome } from "../app/ports.js";
 import { enqueueCollect } from "../app/vault-events.js";
 import type { Invoice } from "../domain/invoice/invoice.js";
 import {
@@ -152,6 +152,7 @@ async function onResult(b: Billing, j: CollectJob, r: CollectTxResult): Promise<
   });
   if (!l) return;
   const action = onTxFailure(r.code, l.errorsBefore, now);
+  b.metrics?.keeperCollect(failureOutcome(action.kind), l.m.livemode);
   switch (action.kind) {
     case "fallback_insufficient":
       return fallback(b, j, "ERR_INSUFFICIENT_BALANCE", { insufficient: true });
@@ -184,9 +185,26 @@ async function onResult(b: Billing, j: CollectJob, r: CollectTxResult): Promise<
   }
 }
 
+/** The metric outcome of a final `collect` transaction failure (§7.1 actions). */
+export function failureOutcome(kind: ReturnType<typeof onTxFailure>["kind"]): KeeperCollectOutcome {
+  switch (kind) {
+    case "fallback_insufficient":
+      return "insufficient";
+    case "await_outcome":
+      return "in_flight";
+    case "retry_at_next_collect_at":
+      return "not_due";
+    case "alert_gas":
+      return "gas";
+    default:
+      return "other";
+  }
+}
+
 /** RPC unavailable before sending (nothing was sent): count it as a keeper error and back off. */
 async function rpcError(b: Billing, j: CollectJob, l: Loaded, error: string): Promise<void> {
   const now = nowS(b);
+  b.metrics?.keeperCollect("other", l.m.livemode);
   const action = onTxFailure(null, l.m.keeper.keeperErrors, now);
   await b.store.transaction(async (tx) => {
     const cur = await load(b, tx, j, true);
@@ -242,6 +260,7 @@ async function recheckPending(b: Billing, j: CollectJob, l: Loaded): Promise<voi
       "ALERT collect succeeded but no forwarded vault event yet (rails forwarding?)",
     );
   if (r.kind === "unknown" && age >= PENDING_ALERT_S) {
+    b.metrics?.keeperCollect("other", l.m.livemode);
     // never landed (dropped or expired): forget it and retry (a late landing is still accounted per period)
     b.log.error({ mandate: l.m.id, tx: hash, age }, "ALERT sent collect unknown to NEAR RPC; retrying");
     await b.store.transaction(async (tx) => {

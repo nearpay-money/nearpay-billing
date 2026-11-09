@@ -3,6 +3,7 @@
  * - `api`     merchant, hosted-invoice and internal routes, with automatic idempotency
  * - `worker`  payments-event consumers, renewal/dunning/PDF jobs, recurring jobs and the outbox relay
  */
+
 import { randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import type { KeySource } from "@nearpay-internal/auth";
@@ -39,6 +40,7 @@ import { billingRoutes } from "../api/routes.js";
 import { eventRenderer } from "../api/views.js";
 import type { ApiConfig, SharedConfig, WorkerConfig } from "../config.js";
 import { billingHandlers, deadLetters } from "../consumers/handlers.js";
+import { clientIpRule } from "../domain/client-ip.js";
 import { identityMerchant, paymentsClient, railsAssets } from "../infra/clients/peers.js";
 import { sandboxVault } from "../infra/clients/sandbox.js";
 import { MIGRATIONS_DIR } from "../infra/db/migrations.js";
@@ -55,6 +57,7 @@ import type { PdfRenderer } from "./pdf.js";
 import type {
   AssetsPort,
   Billing,
+  BillingMetrics,
   Logger,
   MerchantPort,
   ObjectStore,
@@ -83,6 +86,7 @@ interface Built {
   billing: Billing;
   database: Database<DB>;
   setLog(l: Logger): void;
+  setMetrics(m: Service["metrics"]): void;
 }
 
 function build(config: SharedConfig, deps: ServiceDeps, app: string): Built {
@@ -101,6 +105,7 @@ function build(config: SharedConfig, deps: ServiceDeps, app: string): Built {
     })();
   const peer = { serviceToken, ...f };
   let log: Logger = { info() {}, warn() {}, error() {} };
+  let keeperCollect: BillingMetrics["keeperCollect"] = () => {};
   const sandboxBase = config.sandboxBaseUrl?.replace(/\/$/, "");
   const vault =
     deps.vault ??
@@ -136,6 +141,7 @@ function build(config: SharedConfig, deps: ServiceDeps, app: string): Built {
       vaultContract: config.testVaultContract,
     });
   const billing: Billing = {
+    metrics: { keeperCollect: (o, live) => keeperCollect(o, live) },
     store: postgresStore(database.db, eventRenderer(config.apiOrigin.replace(/\/$/, ""))),
     payments: deps.payments ?? paymentsClient({ ...peer, baseUrl: config.paymentsUrl }),
     merchant: deps.merchant ?? identityMerchant({ ...peer, baseUrl: config.identityUrl }),
@@ -171,6 +177,14 @@ function build(config: SharedConfig, deps: ServiceDeps, app: string): Built {
     setLog: (l) => {
       log = l;
     },
+    setMetrics: (m) => {
+      const c = m.counter(
+        "keeper_collect_total",
+        "Keeper collect outcomes (§7.1): collected / collect_failed (forwarded vault events), insufficient, in_flight, not_due, gas, other.",
+        ["outcome", "livemode"],
+      );
+      keeperCollect = (outcome, live) => c.inc({ outcome, livemode: String(live) });
+    },
   };
 }
 
@@ -187,6 +201,7 @@ function readiness(b: Built) {
 
 function attach(b: Built, service: Service, deps: ServiceDeps) {
   b.setLog(service.log);
+  b.setMetrics(service.metrics);
   service.onShutdown(async () => {
     if (!deps.database) await b.database.close();
   });
@@ -198,7 +213,11 @@ export function createApi(config: ApiConfig, deps: ServiceDeps = {}): { service:
     name: "billing",
     config,
     ...(deps.keys ? { keys: deps.keys } : {}),
-    routes: billingRoutes(b.billing, config.env),
+    routes: billingRoutes(
+      b.billing,
+      config.env,
+      clientIpRule(config.env, { header: config.clientIpHeader, trustedProxies: config.trustedProxies }),
+    ),
     idempotency: idempotencyStore(b.database.db, b.billing.cipher),
     readiness: readiness(b),
   });

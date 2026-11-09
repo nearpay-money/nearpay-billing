@@ -305,6 +305,7 @@ describe("keeper and outcomes (§7.1)", () => {
     await jobs();
     expect(b.fakeVault.sent).toHaveLength(1);
     await deliver(record(collected()));
+    expect(b.keeperOutcomes.filter((o) => o.startsWith("collected"))).toHaveLength(1);
     const paid = invoice(first.id);
     expect(paid.status).toBe("paid");
     expect(paid.paymentIntentId).toBeNull();
@@ -437,6 +438,14 @@ describe("keeper failure paths", () => {
     await jobs();
     expect(b.fakeVault.sent).toHaveLength(3);
     expect(invoice(first.id).collectionMethod).toBe("send_invoice");
+    // nearpay_billing_keeper_collect_total{outcome}
+    expect(b.keeperOutcomes.filter((o) => !o.startsWith("collected"))).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^in_flight:/),
+        expect.stringMatching(/^gas:/),
+        expect.stringMatching(/^other:/),
+      ]),
+    );
   });
 
   it("unknown results keep the collect pending and re-check its status; never a second send", async () => {

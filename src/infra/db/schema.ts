@@ -19,6 +19,17 @@ export interface TaxAmountJson {
   taxable_amount: string;
 }
 
+/** `invoices.mandate_collection` as stored (amounts as decimal strings, uuids). */
+export interface MandateCollectionJson {
+  mandate: string;
+  period: number;
+  token: string;
+  merchant_share: string;
+  fee: string;
+  tx_hash: string;
+  receipt_id: string;
+}
+
 export interface ProductsTable {
   id: string;
   account_id: string;
@@ -109,6 +120,8 @@ export interface SubscriptionsTable {
   version: number;
   /** Test-mode billing clock offset in seconds (int8 as string; migration 0002, lld/billing.md §13). */
   clock_offset_s: ColumnType<string, never, string>;
+  /** Linked collecting mandate (migration 0003). */
+  mandate_id: ColumnType<string | null, string | null | undefined, string | null>;
 }
 
 export interface SubscriptionItemsTable {
@@ -161,6 +174,10 @@ export interface InvoicesTable {
   payment_intent_ids: string[];
   pdf_object_key: string | null;
   destination_fingerprint: ColumnType<string | null, string | null | undefined, string | null>;
+  /** Stage 4 (migration 0003). */
+  mandate_id: ColumnType<string | null, string | null | undefined, string | null>;
+  collect_period: ColumnType<string | null, string | number | null | undefined, string | number | null>;
+  mandate_collection: ColumnType<MandateCollectionJson | null, string | null | undefined, string | null>;
   uncollectible_reason: string | null;
   finalized_at: OptTs;
   sent_at: OptTs;
@@ -209,6 +226,121 @@ export interface RateCountersTable {
   count: number;
 }
 
+type Int8 = ColumnType<string, string | number, string | number>;
+type OptInt8 = ColumnType<string | null, string | number | null | undefined, string | number | null>;
+
+/** migrations/0003_mandates.sql */
+export interface MandatesTable {
+  id: string;
+  account_id: string;
+  livemode: boolean;
+  subscription_id: string;
+  customer_id: string;
+  vault_contract: string;
+  onchain_id: Int8;
+  payer: string;
+  token: string;
+  amount_per_period: Num;
+  period_secs: Int8;
+  start_at_ns: Num;
+  max_periods: OptInt8;
+  collected_periods: Int8;
+  balance: Num;
+  withdrawn: Num;
+  merchant_receiver: string;
+  receiver_kind: string;
+  fee_bps: number;
+  ext_ref: string;
+  settlement_destination_id: string | null;
+  link_status: string;
+  unlinked_reason: string | null;
+  status: string;
+  released_at: OptTs;
+  collect_failures: number;
+  collect_failures_since: OptTs;
+  keeper_errors: number;
+  pending_tx_hash: string | null;
+  pending_since: OptTs;
+  collecting_invoice_id: string | null;
+  last_attempt_at: OptTs;
+  canceled_by: string | null;
+  canceled_refunded: ColumnType<string | null, string | null | undefined, string | null>;
+  canceled_at: OptTs;
+  last_collection: ColumnType<CollectionJson | null, string | null | undefined, string | null>;
+  last_event_height: OptInt8;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+  version: number;
+}
+
+/** `mandates.last_collection` as stored. */
+export interface CollectionJson {
+  period: number;
+  amount: string;
+  merchant_share: string;
+  fee: string;
+  short: boolean;
+  invoice: string | null;
+  tx_hash: string;
+  receipt_id: string;
+  collected_at: number;
+}
+
+export interface MandateCollectionsTable {
+  receipt_id: string;
+  mandate_id: string;
+  period: Int8;
+  amount: Num;
+  merchant_share: Num;
+  fee: Num;
+  short: boolean;
+  invoice_id: string | null;
+  applied: string;
+  tx_hash: string;
+  collected_at: Timestamp;
+  created_at: Timestamp;
+}
+
+export interface VaultEventsTable {
+  dedupe_key: string;
+  vault_contract: string;
+  livemode: boolean;
+  onchain_id: Int8;
+  event: string;
+  block_height: Int8;
+  outcome: string;
+  received_at: Timestamp;
+}
+
+export interface VaultEventsParkedTable {
+  id: string;
+  dedupe_key: string;
+  vault_contract: string | null;
+  livemode: boolean | null;
+  onchain_id: OptInt8;
+  event: string | null;
+  reason: string;
+  retriable: boolean;
+  attempts: Def<number>;
+  error: string | null;
+  payload: Json<unknown>;
+  next_attempt_at: OptTs;
+  resolved_at: OptTs;
+  created_at: Timestamp;
+}
+
+export interface VaultCasesTable {
+  id: string;
+  account_id: string;
+  livemode: boolean;
+  mandate_id: string;
+  invoice_id: string | null;
+  kind: string;
+  detail: Json<Record<string, unknown>>;
+  created_at: Timestamp;
+  resolved_at: OptTs;
+}
+
 export interface DB extends KitTables {
   products: ProductsTable;
   prices: PricesTable;
@@ -221,4 +353,10 @@ export interface DB extends KitTables {
   invoice_transitions: TransitionsTable & { invoice_id: string };
   subscription_transitions: TransitionsTable & { subscription_id: string };
   rate_counters: RateCountersTable;
+  mandates: MandatesTable;
+  mandate_transitions: TransitionsTable & { mandate_id: string };
+  mandate_collections: MandateCollectionsTable;
+  vault_events: VaultEventsTable;
+  vault_events_parked: VaultEventsParkedTable;
+  vault_cases: VaultCasesTable;
 }

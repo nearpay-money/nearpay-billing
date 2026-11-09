@@ -5,6 +5,7 @@
  * an aggregate carries its own increasing version (consumers drop stale ones).
  */
 import type { Invoice } from "../domain/invoice/invoice.js";
+import type { Mandate } from "../domain/mandate/mandate.js";
 import type { Subscription } from "../domain/subscription/subscription.js";
 import type { BillingSubject, BillingTx, EventObject } from "./ports.js";
 
@@ -99,6 +100,44 @@ export async function saveSubscription(
       aggregate: { type: "subscription", id: row.id, version },
       scope: { accountId: row.accountId, livemode: row.livemode },
       object: { kind: "subscription", subscription: { ...row, version }, prices },
+      ...(prev && prev.status !== row.status ? { previous: { status: prev.status } } : {}),
+    });
+  }
+  return row;
+}
+
+/** Status label of a mandate in transition rows: the public status plus the link state. */
+const mandateState = (m: Mandate): string => `${m.status}/${m.linkStatus}${m.releasedAt !== null ? "/released" : ""}`;
+
+/** Mandate row + transition (when the state label changed) + its events, in the caller's transaction. */
+export async function saveMandate(
+  tx: BillingTx,
+  prev: Mandate | null,
+  next: Mandate,
+  meta: Meta,
+  subjects: Subjects = [],
+): Promise<Mandate> {
+  const v = versions(prev, subjects.length);
+  const row: Mandate = { ...next, version: v.final };
+  if (prev) await tx.mandates.update(prev, row);
+  else await tx.mandates.insert(row);
+  if (!prev || mandateState(prev) !== mandateState(row))
+    await tx.recordTransition({
+      aggregate: "mandate",
+      id: row.id,
+      from: prev ? mandateState(prev) : null,
+      to: mandateState(row),
+      cause: meta.cause,
+      actor: meta.actor,
+      evidence: meta.evidence,
+    });
+  for (const [i, subject] of subjects.entries()) {
+    const version = v.first + i;
+    await tx.emit({
+      subject,
+      aggregate: { type: "mandate", id: row.id, version },
+      scope: { accountId: row.accountId, livemode: row.livemode },
+      object: { kind: "mandate", mandate: { ...row, version } },
       ...(prev && prev.status !== row.status ? { previous: { status: prev.status } } : {}),
     });
   }

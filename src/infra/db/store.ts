@@ -27,12 +27,21 @@ import {
 } from "../../app/ports.js";
 import type { Invoice } from "../../domain/invoice/invoice.js";
 import type { InvoiceLine, TaxAmount } from "../../domain/invoice/lines.js";
+import type { Collection, Mandate } from "../../domain/mandate/mandate.js";
 import type { Price } from "../../domain/price/price.js";
 import type { Product } from "../../domain/product/product.js";
 import type { Scope } from "../../domain/shared.js";
 import type { Subscription } from "../../domain/subscription/subscription.js";
 import type { TaxRate } from "../../domain/tax-rate/tax-rate.js";
-import type { DB, InvoiceLinesTable, InvoicesTable, SubscriptionsTable, TaxAmountJson } from "./schema.js";
+import type {
+  CollectionJson,
+  DB,
+  InvoiceLinesTable,
+  InvoicesTable,
+  MandatesTable,
+  SubscriptionsTable,
+  TaxAmountJson,
+} from "./schema.js";
 
 type Tx = Transaction<DB>;
 
@@ -230,6 +239,19 @@ const invoiceIn = (r: Sel<InvoicesTable>, lines: InvoiceLine[]): Invoice => ({
   customerId: idOf("cus", r.customer_id),
   subscriptionId: optId("sub", r.subscription_id),
   billingReason: r.billing_reason as Invoice["billingReason"],
+  collectionMethod: r.collection_method as Invoice["collectionMethod"],
+  mandateId: optId("md", r.mandate_id),
+  mandateCollection: r.mandate_collection
+    ? {
+        mandateId: idOf("md", r.mandate_collection.mandate),
+        period: r.mandate_collection.period,
+        assetId: r.mandate_collection.token,
+        merchantShare: BigInt(r.mandate_collection.merchant_share),
+        fee: BigInt(r.mandate_collection.fee),
+        txHash: r.mandate_collection.tx_hash,
+        receiptId: r.mandate_collection.receipt_id,
+      }
+    : null,
   number: r.number,
   status: r.status as Invoice["status"],
   currency: r.currency,
@@ -287,6 +309,20 @@ const invoiceOut = (i: Invoice) => ({
   customer_id: must(i.customerId),
   subscription_id: optUuid(i.subscriptionId),
   billing_reason: i.billingReason,
+  collection_method: i.collectionMethod,
+  mandate_id: optUuid(i.mandateId),
+  collect_period: i.mandateCollection?.period ?? null,
+  mandate_collection: i.mandateCollection
+    ? JSON.stringify({
+        mandate: must(i.mandateCollection.mandateId),
+        period: i.mandateCollection.period,
+        token: i.mandateCollection.assetId,
+        merchant_share: i.mandateCollection.merchantShare.toString(),
+        fee: i.mandateCollection.fee.toString(),
+        tx_hash: i.mandateCollection.txHash,
+        receipt_id: i.mandateCollection.receiptId,
+      })
+    : null,
   number: i.number,
   status: i.status,
   currency: i.currency,
@@ -338,6 +374,8 @@ const subscriptionIn = (r: Sel<SubscriptionsTable>, items: Subscription["items"]
   livemode: r.livemode,
   customerId: idOf("cus", r.customer_id),
   status: r.status as Subscription["status"],
+  collectionMethod: r.collection_method as Subscription["collectionMethod"],
+  mandateId: optId("md", r.mandate_id),
   items,
   currency: r.currency,
   assetId: r.asset_id,
@@ -370,6 +408,8 @@ const subscriptionOut = (s: Subscription) => ({
   livemode: s.livemode,
   customer_id: must(s.customerId),
   status: s.status,
+  collection_method: s.collectionMethod,
+  mandate_id: optUuid(s.mandateId),
   currency: s.currency,
   asset_id: s.assetId,
   interval: s.recurring.interval,
@@ -397,11 +437,122 @@ const subscriptionOut = (s: Subscription) => ({
   version: s.version,
 });
 
+const collectionOut = (c: Collection): CollectionJson => ({
+  period: c.period,
+  amount: c.amount.toString(),
+  merchant_share: c.merchantShare.toString(),
+  fee: c.fee.toString(),
+  short: c.short,
+  invoice: c.invoiceId === null ? null : must(c.invoiceId),
+  tx_hash: c.txHash,
+  receipt_id: c.receiptId,
+  collected_at: c.collectedAt,
+});
+const collectionIn = (c: CollectionJson): Collection => ({
+  period: c.period,
+  amount: BigInt(c.amount),
+  merchantShare: BigInt(c.merchant_share),
+  fee: BigInt(c.fee),
+  short: c.short,
+  invoiceId: optId("in", c.invoice),
+  txHash: c.tx_hash,
+  receiptId: c.receipt_id,
+  collectedAt: c.collected_at,
+});
+
+const mandateIn = (r: Sel<MandatesTable>): Mandate => ({
+  id: idOf("md", r.id),
+  accountId: r.account_id,
+  livemode: r.livemode,
+  subscriptionId: idOf("sub", r.subscription_id),
+  customerId: idOf("cus", r.customer_id),
+  vaultContract: r.vault_contract,
+  onchainId: Number(r.onchain_id),
+  payer: r.payer,
+  token: r.token,
+  amountPerPeriod: BigInt(r.amount_per_period),
+  periodSecs: Number(r.period_secs),
+  startAtNs: BigInt(r.start_at_ns),
+  maxPeriods: r.max_periods === null ? null : Number(r.max_periods),
+  collectedPeriods: Number(r.collected_periods),
+  balance: BigInt(r.balance),
+  withdrawn: BigInt(r.withdrawn),
+  merchantReceiver: r.merchant_receiver,
+  receiverKind: r.receiver_kind as Mandate["receiverKind"],
+  feeBps: r.fee_bps,
+  extRef: r.ext_ref,
+  settlementDestinationId: optId("sd", r.settlement_destination_id),
+  linkStatus: r.link_status as Mandate["linkStatus"],
+  unlinkedReason: r.unlinked_reason as Mandate["unlinkedReason"],
+  status: r.status as Mandate["status"],
+  releasedAt: optUnix(r.released_at),
+  keeper: {
+    collectFailures: r.collect_failures,
+    collectFailuresSince: optUnix(r.collect_failures_since),
+    keeperErrors: r.keeper_errors,
+    pendingTxHash: r.pending_tx_hash,
+    pendingSince: optUnix(r.pending_since),
+    collectingInvoiceId: optId("in", r.collecting_invoice_id),
+    lastAttemptAt: optUnix(r.last_attempt_at),
+  },
+  canceled:
+    r.canceled_by !== null && r.canceled_at !== null
+      ? { by: r.canceled_by, refunded: BigInt(r.canceled_refunded ?? "0"), at: unix(r.canceled_at) }
+      : null,
+  lastCollection: r.last_collection ? collectionIn(r.last_collection) : null,
+  lastEventHeight: r.last_event_height === null ? null : Number(r.last_event_height),
+  created: unix(r.created_at),
+  updated: unix(r.updated_at),
+  version: r.version,
+});
+const mandateOut = (m: Mandate) => ({
+  id: must(m.id),
+  account_id: m.accountId,
+  livemode: m.livemode,
+  subscription_id: must(m.subscriptionId),
+  customer_id: must(m.customerId),
+  vault_contract: m.vaultContract,
+  onchain_id: String(m.onchainId),
+  payer: m.payer,
+  token: m.token,
+  amount_per_period: m.amountPerPeriod.toString(),
+  period_secs: String(m.periodSecs),
+  start_at_ns: m.startAtNs.toString(),
+  max_periods: m.maxPeriods === null ? null : String(m.maxPeriods),
+  collected_periods: String(m.collectedPeriods),
+  balance: m.balance.toString(),
+  withdrawn: m.withdrawn.toString(),
+  merchant_receiver: m.merchantReceiver,
+  receiver_kind: m.receiverKind,
+  fee_bps: m.feeBps,
+  ext_ref: m.extRef,
+  settlement_destination_id: optUuid(m.settlementDestinationId),
+  link_status: m.linkStatus,
+  unlinked_reason: m.unlinkedReason,
+  status: m.status,
+  released_at: optTs(m.releasedAt),
+  collect_failures: m.keeper.collectFailures,
+  collect_failures_since: optTs(m.keeper.collectFailuresSince),
+  keeper_errors: m.keeper.keeperErrors,
+  pending_tx_hash: m.keeper.pendingTxHash,
+  pending_since: optTs(m.keeper.pendingSince),
+  collecting_invoice_id: optUuid(m.keeper.collectingInvoiceId),
+  last_attempt_at: optTs(m.keeper.lastAttemptAt),
+  canceled_by: m.canceled?.by ?? null,
+  canceled_refunded: m.canceled ? m.canceled.refunded.toString() : null,
+  canceled_at: m.canceled ? ts(m.canceled.at) : null,
+  last_collection: m.lastCollection ? JSON.stringify(collectionOut(m.lastCollection)) : null,
+  last_event_height: m.lastEventHeight === null ? null : String(m.lastEventHeight),
+  created_at: ts(m.created),
+  updated_at: ts(m.updated),
+  version: m.version,
+});
+
 // ---------------------------------------------------------------------------------------------
 // Queries
 // ---------------------------------------------------------------------------------------------
 
-type ListTable = "products" | "prices" | "tax_rates" | "invoices" | "subscriptions";
+type ListTable = "products" | "prices" | "tax_rates" | "invoices" | "subscriptions" | "mandates";
 
 /**
  * Keyset page, newest first, `(created_at, id)` order. Cursors must belong to the same scope (a foreign or
@@ -706,6 +857,7 @@ function txAdapter(tx: Tx, render: EventRenderer): BillingTx {
           if (subscription) b = b.where("subscription_id", "=", subscription);
           if (q.dueDate?.gte !== undefined) b = b.where("due_date", ">=", ts(q.dueDate.gte));
           if (q.dueDate?.lte !== undefined) b = b.where("due_date", "<=", ts(q.dueDate.lte));
+          if (q.collectionMethod !== undefined) b = b.where("collection_method", "=", q.collectionMethod);
           return b;
         });
         return { data: await invoicesWithLines(tx, rows), hasMore: rows.hasMore ?? false };
@@ -823,6 +975,268 @@ function txAdapter(tx: Tx, render: EventRenderer): BillingTx {
         return { data: await subsWithItems(tx, rows), hasMore: rows.hasMore ?? false };
       },
     },
+    mandates: {
+      async get(scope, id, o) {
+        const u = uuidOf(id);
+        if (!u) return undefined;
+        const q = tx
+          .selectFrom("mandates")
+          .selectAll()
+          .where("id", "=", u)
+          .where("account_id", "=", scope.accountId)
+          .where("livemode", "=", scope.livemode);
+        const r = await (o?.lock ? q.forUpdate() : q).executeTakeFirst();
+        return r ? mandateIn(r) : undefined;
+      },
+      async getByIdUnscoped(id) {
+        const u = uuidOf(id);
+        if (!u) return undefined;
+        const r = await tx.selectFrom("mandates").selectAll().where("id", "=", u).executeTakeFirst();
+        return r ? mandateIn(r) : undefined;
+      },
+      async byOnchain(vaultContract, onchainId, o) {
+        const q = tx
+          .selectFrom("mandates")
+          .selectAll()
+          .where("vault_contract", "=", vaultContract)
+          .where("onchain_id", "=", String(onchainId));
+        const r = await (o?.lock ? q.forUpdate() : q).executeTakeFirst();
+        return r ? mandateIn(r) : undefined;
+      },
+      async insert(row) {
+        await tx.insertInto("mandates").values(mandateOut(row)).execute();
+      },
+      async update(prev, next) {
+        const { id, account_id, livemode, created_at, ...rest } = mandateOut(next);
+        void account_id;
+        void livemode;
+        void created_at;
+        const r = await tx
+          .updateTable("mandates")
+          .set(rest)
+          .where("id", "=", id)
+          .where("version", "=", prev.version)
+          .executeTakeFirst();
+        if (Number(r.numUpdatedRows) !== 1) throw concurrent("mandate", prev.id);
+      },
+      async list(scope, q) {
+        const sub = q.subscription === undefined ? undefined : uuidOf(q.subscription);
+        const cus = q.customer === undefined ? undefined : uuidOf(q.customer);
+        if ((q.subscription !== undefined && !sub) || (q.customer !== undefined && !cus))
+          return { data: [], hasMore: false };
+        const rows = await listPage(tx, "mandates", scope, q, (qb) => {
+          let b = qb;
+          if (sub) b = b.where("subscription_id", "=", sub);
+          if (cus) b = b.where("customer_id", "=", cus);
+          if (q.status !== undefined) b = b.where("status", "=", q.status);
+          if (q.linkStatus !== undefined) b = b.where("link_status", "=", q.linkStatus);
+          if (q.payer !== undefined) b = b.where("payer", "=", q.payer);
+          return b;
+        });
+        return { data: rows.map(mandateIn), hasMore: rows.hasMore ?? false };
+      },
+      async collectingFor(scope, subscriptionId, o) {
+        const u = uuidOf(subscriptionId);
+        if (!u) return undefined;
+        const q = tx
+          .selectFrom("mandates")
+          .selectAll()
+          .where("account_id", "=", scope.accountId)
+          .where("livemode", "=", scope.livemode)
+          .where("subscription_id", "=", u)
+          .where("link_status", "=", "linked")
+          .where("released_at", "is", null)
+          .where("status", "in", ["active", "insufficient"]);
+        const r = await (o?.lock ? q.forUpdate() : q).executeTakeFirst();
+        return r ? mandateIn(r) : undefined;
+      },
+      async newestFor(scope, subscriptionId) {
+        const u = uuidOf(subscriptionId);
+        if (!u) return undefined;
+        const r = await tx
+          .selectFrom("mandates")
+          .selectAll()
+          .where("account_id", "=", scope.accountId)
+          .where("livemode", "=", scope.livemode)
+          .where("subscription_id", "=", u)
+          .orderBy("created_at", "desc")
+          .orderBy("id", "desc")
+          .executeTakeFirst();
+        return r ? mandateIn(r) : undefined;
+      },
+      async recordCollection(m, c, use) {
+        const r = await tx
+          .insertInto("mandate_collections")
+          .values({
+            receipt_id: c.receiptId,
+            mandate_id: must(m.id),
+            period: String(c.period),
+            amount: c.amount.toString(),
+            merchant_share: c.merchantShare.toString(),
+            fee: c.fee.toString(),
+            short: c.short,
+            invoice_id: optUuid(c.invoiceId),
+            applied: use,
+            tx_hash: c.txHash,
+            collected_at: ts(c.collectedAt),
+          })
+          .onConflict((oc) => oc.doNothing())
+          .executeTakeFirst();
+        return Number(r.numInsertedOrUpdatedRows ?? 0n) === 1;
+      },
+      async unappliedCollection(m) {
+        const r = await tx
+          .selectFrom("mandate_collections")
+          .selectAll()
+          .where("mandate_id", "=", must(m.id))
+          .where("applied", "=", "unapplied")
+          .where("short", "=", false)
+          .orderBy("period")
+          .executeTakeFirst();
+        return r
+          ? {
+              period: Number(r.period),
+              amount: BigInt(r.amount),
+              merchantShare: BigInt(r.merchant_share),
+              fee: BigInt(r.fee),
+              short: r.short,
+              invoiceId: optId("in", r.invoice_id),
+              txHash: r.tx_hash,
+              receiptId: r.receipt_id,
+              collectedAt: unix(r.collected_at),
+            }
+          : undefined;
+      },
+      async applyCollection(receiptId, invoiceId, use) {
+        await tx
+          .updateTable("mandate_collections")
+          .set({ invoice_id: must(invoiceId), applied: use })
+          .where("receipt_id", "=", receiptId)
+          .execute();
+      },
+    },
+    mandateInvoices: {
+      async payableAutoDebit(m) {
+        const rows = await tx
+          .selectFrom("invoices")
+          .selectAll()
+          .where("account_id", "=", m.accountId)
+          .where("livemode", "=", m.livemode)
+          .where("mandate_id", "=", must(m.id))
+          .where("collection_method", "=", "auto_debit")
+          .where("status", "in", ["open", "uncollectible"])
+          .orderBy("period_start")
+          .orderBy("created_at")
+          .execute();
+        return invoicesWithLines(tx, rows);
+      },
+      async payableAutoDebitOfSubscription(scope, subscriptionId) {
+        const rows = await tx
+          .selectFrom("invoices")
+          .selectAll()
+          .where("account_id", "=", scope.accountId)
+          .where("livemode", "=", scope.livemode)
+          .where("subscription_id", "=", must(subscriptionId))
+          .where("collection_method", "=", "auto_debit")
+          .where("status", "in", ["open", "uncollectible"])
+          .orderBy("period_start")
+          .forUpdate()
+          .execute();
+        return invoicesWithLines(tx, rows);
+      },
+    },
+    vaultEvents: {
+      async markApplied(e) {
+        const r = await tx
+          .insertInto("vault_events")
+          .values({
+            dedupe_key: e.dedupeKey,
+            vault_contract: e.vaultContract,
+            livemode: e.livemode,
+            onchain_id: String(e.onchainId),
+            event: e.event,
+            block_height: String(e.blockHeight),
+            outcome: e.outcome,
+          })
+          .onConflict((oc) => oc.column("dedupe_key").doNothing())
+          .executeTakeFirst();
+        return Number(r.numInsertedOrUpdatedRows ?? 0n) === 1;
+      },
+      async park(e) {
+        await tx
+          .insertInto("vault_events_parked")
+          .values({
+            id: uuidv7(),
+            dedupe_key: e.dedupeKey,
+            vault_contract: e.vaultContract,
+            livemode: e.livemode,
+            onchain_id: e.onchainId === null ? null : String(e.onchainId),
+            event: e.event,
+            reason: e.reason,
+            retriable: e.retryAt !== null,
+            error: e.error,
+            payload: JSON.stringify(e.payload),
+            next_attempt_at: optTs(e.retryAt),
+          })
+          .onConflict((oc) =>
+            oc.column("dedupe_key").doUpdateSet({
+              attempts: sql`vault_events_parked.attempts + 1`,
+              reason: e.reason,
+              retriable: e.retryAt !== null,
+              error: e.error,
+              next_attempt_at: optTs(e.retryAt),
+              resolved_at: null,
+            }),
+          )
+          .execute();
+      },
+      async dueParked(now, limit) {
+        const rows = await tx
+          .selectFrom("vault_events_parked")
+          .select(["dedupe_key", "payload", "attempts"])
+          .where("resolved_at", "is", null)
+          .where("retriable", "=", true)
+          .where("next_attempt_at", "<=", ts(now))
+          .orderBy("next_attempt_at")
+          .limit(limit)
+          .execute();
+        return rows.map((r) => ({ dedupeKey: r.dedupe_key, payload: r.payload, attempts: r.attempts }));
+      },
+      async resolveParked(dedupeKey) {
+        await tx
+          .updateTable("vault_events_parked")
+          .set({ resolved_at: new Date() })
+          .where("dedupe_key", "=", dedupeKey)
+          .where("resolved_at", "is", null)
+          .execute();
+      },
+      async parkedFor(vaultContract, onchainId) {
+        const rows = await tx
+          .selectFrom("vault_events_parked")
+          .select(["dedupe_key", "payload", "attempts"])
+          .where("resolved_at", "is", null)
+          .where("retriable", "=", true)
+          .where("vault_contract", "=", vaultContract)
+          .where("onchain_id", "=", String(onchainId))
+          .orderBy("created_at")
+          .execute();
+        return rows.map((r) => ({ dedupeKey: r.dedupe_key, payload: r.payload, attempts: r.attempts }));
+      },
+    },
+    async openCase(c) {
+      await tx
+        .insertInto("vault_cases")
+        .values({
+          id: uuidv7(),
+          account_id: c.scope.accountId,
+          livemode: c.scope.livemode,
+          mandate_id: must(c.mandateId),
+          invoice_id: optUuid(c.invoiceId),
+          kind: c.kind,
+          detail: JSON.stringify(c.detail, (_k, v) => (typeof v === "bigint" ? v.toString() : v)),
+        })
+        .execute();
+    },
     sequences: {
       async next(scope, prefixIfNew) {
         const r = await tx
@@ -849,6 +1263,11 @@ function txAdapter(tx: Tx, render: EventRenderer): BillingTx {
         await tx
           .insertInto("invoice_transitions")
           .values({ ...row, invoice_id: must(t.id) })
+          .execute();
+      else if (t.aggregate === "mandate")
+        await tx
+          .insertInto("mandate_transitions")
+          .values({ ...row, mandate_id: must(t.id) })
           .execute();
       else
         await tx

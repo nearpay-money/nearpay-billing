@@ -40,16 +40,28 @@ import { eventRenderer } from "../api/views.js";
 import type { ApiConfig, SharedConfig, WorkerConfig } from "../config.js";
 import { billingHandlers, deadLetters } from "../consumers/handlers.js";
 import { identityMerchant, paymentsClient, railsAssets } from "../infra/clients/peers.js";
+import { sandboxVault } from "../infra/clients/sandbox.js";
 import { MIGRATIONS_DIR } from "../infra/db/migrations.js";
 import type { DB } from "../infra/db/schema.js";
 import { postgresStore } from "../infra/db/store.js";
 import { newBillingId } from "../infra/ids.js";
+import { nearRpc } from "../infra/near/rpc.js";
+import { ephemeralKeeperKey, nearVault, parseKeeperKey } from "../infra/near/vault.js";
 import { objectStore } from "../infra/objects.js";
 import { invoicePdfRenderer } from "../infra/pdf/invoice-pdf.js";
 import { RECURRING, recurringHandlers } from "../scheduler/recurring.js";
 import { jobHandlers } from "../workers/jobs.js";
 import type { PdfRenderer } from "./pdf.js";
-import type { AssetsPort, Billing, Logger, MerchantPort, ObjectStore, PaymentsPort } from "./ports.js";
+import type {
+  AssetsPort,
+  Billing,
+  Logger,
+  MerchantPort,
+  ObjectStore,
+  PaymentsPort,
+  SandboxVaultPort,
+  VaultPort,
+} from "./ports.js";
 
 export interface ServiceDeps {
   database?: Database<DB>;
@@ -58,6 +70,8 @@ export interface ServiceDeps {
   payments?: PaymentsPort;
   merchant?: MerchantPort;
   assets?: AssetsPort;
+  vault?: VaultPort;
+  sandbox?: SandboxVaultPort;
   objects?: ObjectStore;
   pdf?: PdfRenderer;
   cipher?: EnvelopeCipher;
@@ -87,11 +101,47 @@ function build(config: SharedConfig, deps: ServiceDeps, app: string): Built {
     })();
   const peer = { serviceToken, ...f };
   let log: Logger = { info() {}, warn() {}, error() {} };
+  const sandboxBase = config.sandboxBaseUrl?.replace(/\/$/, "");
+  const vault =
+    deps.vault ??
+    nearVault({
+      live: {
+        rpc: nearRpc({ urls: config.nearRpcUrls, ...f }),
+        contract: config.vaultContract,
+        keeper: config.keeperKey ? parseKeeperKey(config.keeperKey, config.keeperAccount) : null,
+        strictKeyPermission: true,
+      },
+      test: {
+        rpc: nearRpc({
+          urls:
+            config.testNearRpcUrls ??
+            (sandboxBase ? [`${sandboxBase}/sim/near-rpc`] : ["http://sandbox.invalid/sim/near-rpc"]),
+          bearer: serviceToken,
+          ...f,
+        }),
+        contract: config.testVaultContract,
+        keeper: config.testKeeperKey
+          ? parseKeeperKey(config.testKeeperKey, config.testKeeperAccount)
+          : sandboxBase
+            ? ephemeralKeeperKey(config.testKeeperAccount)
+            : null,
+        strictKeyPermission: false,
+      },
+    });
+  const sandbox =
+    deps.sandbox ??
+    sandboxVault({
+      ...peer,
+      baseUrl: sandboxBase ?? "http://sandbox.invalid",
+      vaultContract: config.testVaultContract,
+    });
   const billing: Billing = {
     store: postgresStore(database.db, eventRenderer(config.apiOrigin.replace(/\/$/, ""))),
     payments: deps.payments ?? paymentsClient({ ...peer, baseUrl: config.paymentsUrl }),
     merchant: deps.merchant ?? identityMerchant({ ...peer, baseUrl: config.identityUrl }),
     assets: deps.assets ?? railsAssets({ ...peer, baseUrl: config.railsUrl }),
+    vault,
+    sandbox,
     cipher: deps.cipher ?? createEnvelopeCipher(parseKek(config.piiKek)),
     objects: deps.objects ?? objectStore(config.objectStore),
     pdf: deps.pdf ?? invoicePdfRenderer(),
@@ -106,6 +156,10 @@ function build(config: SharedConfig, deps: ServiceDeps, app: string): Built {
       pricingCurrencies: new Set(config.pricingCurrencies),
       publicSessionsPerClient: config.publicSessionsPerClient,
       publicSessionsPerInvoice: config.publicSessionsPerInvoice,
+      vaultUsdTokens: config.vaultUsdTokens,
+      vaultTokens: config.vaultTokens,
+      vaultMaxFeeBps: config.vaultMaxFeeBps,
+      simulatedPayer: config.simulatedPayer,
     },
     newId: newBillingId,
     randomBytes: (n) => new Uint8Array(randomBytes(n)),
@@ -198,7 +252,7 @@ export async function createWorker(
     jobWorkerTask({
       db: db.db,
       workerId: `billing-worker@${hostname()}:${process.pid}`,
-      handlers: { ...jobHandlers(b.billing), ...recurringHandlers(db.db) },
+      handlers: { ...jobHandlers(b.billing), ...recurringHandlers(db.db, b.billing) },
       onError: (e, job) => service.log.warn({ err: e instanceof Error ? e.message : String(e), job }, "job failed"),
       onDeadLetter: (j) => service.log.error({ job: j }, "ALERT job dead-lettered"),
       ...(deps.tickMs ? { pollMs: deps.tickMs } : {}),

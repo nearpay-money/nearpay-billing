@@ -58,20 +58,25 @@ Secrets come only from `NP_<NAME>_FILE` (Docker secrets); everything else from `
 | `NP_PRICING_CURRENCIES`                                                                    | api         | fiat pricing currencies (comma list, same as payments)                                |
 | `NP_PUBLIC_SESSIONS_PER_CLIENT`, `NP_PUBLIC_SESSIONS_PER_INVOICE`                          | api         | hosted-page session creations per minute (10, 30)                                     |
 
-Stage 4 adds `NP_VAULT_CONTRACT`, `NP_KEEPER_ACCOUNT`, `NP_KEEPER_KEY_FILE`, `NP_NEAR_RPC_URLS` (keeper).
+Stage 4 (auto-debit, `lld/billing.md` v1.11 §8, §15 d14): live vault `NP_VAULT_CONTRACT` (`v1.vault.nearpay.near`),
+`NP_NEAR_RPC_URLS`, keeper `NP_KEEPER_ACCOUNT` + `NP_KEEPER_KEY_FILE` (secret file; a funded NEAR account used only for
+gas, function-call key for the vault — a full-access key is refused; without it the live keeper does not collect);
+test mode `NP_SANDBOX_BASE_URL` (the vault stand-in, `/sim/near-rpc`), `NP_TEST_VAULT_CONTRACT`
+(`vault.sandbox.near`), `NP_TEST_KEEPER_ACCOUNT`, optional `NP_TEST_KEEPER_KEY_FILE`; `NP_VAULT_USD_TOKENS`,
+`NP_VAULT_TOKENS` (USDC, USDT), `NP_VAULT_MAX_FEE_BPS` (500), `NP_SIMULATED_PAYER` (`sandbox-payer.near`).
 
 ## Layout
 
 ```
 nearpay-billing/
-├── migrations/            forward-only SQL (0001_billing.sql)
+├── migrations/            forward-only SQL (0001_billing, 0002_test_clock, 0003_mandates)
 ├── src/
 │   ├── api/               spec routes → use cases
 │   ├── app/               use cases + ports (ports.ts), one transaction per change (commit.ts)
 │   ├── consumers/         payments events → app/payment-events.ts
-│   ├── domain/            pure rules: dunning, invoice, price, product, subscription, tax-rate (mandate: Stage 4)
-│   ├── infra/             Postgres, peers (payments, identity, rails), object store, PDF
-│   ├── keeper/            Stage 4
+│   ├── domain/            pure rules: dunning, invoice, mandate (mirror, terms, funding, keeper), price, product, subscription, tax-rate
+│   ├── infra/             Postgres, peers (payments, identity, rails, sandbox), NEAR RPC + keeper signer, object store, PDF
+│   ├── keeper/            the vault keeper (`mandate.collect`)
 │   ├── scheduler/         recurring jobs
 │   └── workers/           job kinds → use cases
 ├── templates/invoice-pdf/
@@ -81,7 +86,12 @@ nearpay-billing/
 ## Status
 
 Stage 3 (step 3.2): products, prices, tax rates, invoices (hosted page, PDF), `send_invoice` subscriptions and
-dunning are implemented against `@nearpay/spec` 0.3.0 (kit 0.2.1). Stage 4 (mandates, keeper) is not started.
+dunning are implemented against `@nearpay/spec` 0.3.0 (kit 0.2.1), test clock on 0.3.1.
+
+Stage 4 (step 4.2, auto-debit) on `@nearpay/spec` 0.4.0 (kit 0.3.1): mandates mirrored from `evt.rails.vault.event`
+(strict linkage, parking + retry), `prepare` / `prepare_cancel` / list / get, the hosted invoice's auto-debit setup and
+payer view, test helpers on the sandbox stand-in, the keeper (`mandate.collect`, §7.1 outcomes), `auto_debit`
+invoices and subscriptions, release and amount lock, mandate events and notification context.
 
 ## Built with
 

@@ -11,6 +11,8 @@ import {
   type BillingStore,
   type BillingTx,
   CLOCK_JOB_KINDS,
+  type CollectionUse,
+  type CollectTxResult,
   type CustomerFacts,
   type IdKind,
   type InvoiceListQuery,
@@ -19,10 +21,15 @@ import {
   type MerchantFacts,
   type OutgoingEvent,
   type Page,
+  type SandboxVaultPort,
   type SessionFacts,
+  type SimOutcome,
   type Transition,
+  type VaultConfigFacts,
+  type VaultPort,
 } from "../../src/app/ports.js";
 import type { Invoice } from "../../src/domain/invoice/invoice.js";
+import type { Collection, Mandate } from "../../src/domain/mandate/mandate.js";
 import type { Price } from "../../src/domain/price/price.js";
 import type { Product } from "../../src/domain/product/product.js";
 import { DomainError, type Scope } from "../../src/domain/shared.js";
@@ -47,6 +54,22 @@ export interface MemoryState {
   jobs: Map<string, JobRequest & { done: boolean }>;
   inbox: Set<string>;
   counters: Map<string, { window: number; count: number }>;
+  mandates: Map<string, Mandate>;
+  collections: Map<string, { mandateId: string; c: Collection; use: CollectionUse }>;
+  vaultEvents: Set<string>;
+  parked: Map<
+    string,
+    {
+      reason: string;
+      retryAt: number | null;
+      attempts: number;
+      payload: unknown;
+      vaultContract: string | null;
+      onchainId: number | null;
+      resolved: boolean;
+    }
+  >;
+  cases: { mandateId: string; invoiceId: string | null; kind: string; detail: Readonly<Record<string, unknown>> }[];
 }
 
 const empty = (): MemoryState => ({
@@ -61,6 +84,11 @@ const empty = (): MemoryState => ({
   jobs: new Map(),
   inbox: new Set(),
   counters: new Map(),
+  mandates: new Map(),
+  collections: new Map(),
+  vaultEvents: new Set(),
+  parked: new Map(),
+  cases: [],
 });
 
 const inScope = (r: Scope, s: Scope) => r.accountId === s.accountId && r.livemode === s.livemode;
@@ -147,7 +175,129 @@ function txOf(s: MemoryState): BillingTx {
         throw new Error("unique invoices_sub_period");
     }
   };
+  const mandateRepo = repo(s.mandates, "mandate");
+  const collecting = (m: Mandate) =>
+    m.linkStatus === "linked" && m.releasedAt === null && (m.status === "active" || m.status === "insufficient");
+  const payable = (i: Invoice) =>
+    i.collectionMethod === "auto_debit" && (i.status === "open" || i.status === "uncollectible");
+  const byPeriod = (a: Invoice, b: Invoice) => (a.period?.start ?? 0) - (b.period?.start ?? 0) || a.created - b.created;
   return {
+    mandates: {
+      ...mandateRepo,
+      async getByIdUnscoped(id) {
+        const r = s.mandates.get(id);
+        return r ? structuredClone(r) : undefined;
+      },
+      async byOnchain(vault, onchainId) {
+        const r = [...s.mandates.values()].find((m) => m.vaultContract === vault && m.onchainId === onchainId);
+        return r ? structuredClone(r) : undefined;
+      },
+      async insert(row) {
+        if (
+          [...s.mandates.values()].some((m) => m.vaultContract === row.vaultContract && m.onchainId === row.onchainId)
+        )
+          throw new Error("unique (vault_contract, onchain_id)");
+        if (
+          collecting(row) &&
+          [...s.mandates.values()].some((m) => m.subscriptionId === row.subscriptionId && collecting(m))
+        )
+          throw new Error("unique mandates_one_collecting");
+        await mandateRepo.insert(row);
+      },
+      list: async (scope, q) =>
+        page(
+          s.mandates.values(),
+          scope,
+          q,
+          (r) =>
+            (q.subscription === undefined || r.subscriptionId === q.subscription) &&
+            (q.customer === undefined || r.customerId === q.customer) &&
+            (q.status === undefined || r.status === q.status) &&
+            (q.linkStatus === undefined || r.linkStatus === q.linkStatus) &&
+            (q.payer === undefined || r.payer === q.payer),
+        ),
+      async collectingFor(scope, subscriptionId) {
+        const r = [...s.mandates.values()].find(
+          (m) => inScope(m, scope) && m.subscriptionId === subscriptionId && collecting(m),
+        );
+        return r ? structuredClone(r) : undefined;
+      },
+      async newestFor(scope, subscriptionId) {
+        const r = [...s.mandates.values()]
+          .filter((m) => inScope(m, scope) && m.subscriptionId === subscriptionId)
+          .sort((a, b) => b.created - a.created || (a.id < b.id ? 1 : -1))[0];
+        return r ? structuredClone(r) : undefined;
+      },
+      async recordCollection(m, c, use) {
+        if (s.collections.has(c.receiptId)) return false;
+        if ([...s.collections.values()].some((x) => x.mandateId === m.id && x.c.period === c.period)) return false;
+        s.collections.set(c.receiptId, { mandateId: m.id, c: structuredClone(c), use });
+        return true;
+      },
+      async unappliedCollection(m) {
+        const r = [...s.collections.values()]
+          .filter((x) => x.mandateId === m.id && x.use === "unapplied" && !x.c.short)
+          .sort((a, b) => a.c.period - b.c.period)[0];
+        return r ? structuredClone(r.c) : undefined;
+      },
+      async applyCollection(receiptId, invoiceId, use) {
+        const r = s.collections.get(receiptId);
+        if (r) s.collections.set(receiptId, { ...r, use, c: { ...r.c, invoiceId } });
+      },
+    },
+    mandateInvoices: {
+      async payableAutoDebit(m) {
+        return [...s.invoices.values()]
+          .filter((i) => inScope(i, m) && i.mandateId === m.id && payable(i))
+          .sort(byPeriod)
+          .map((i) => withClock(structuredClone(i)) as Invoice);
+      },
+      async payableAutoDebitOfSubscription(scope, subscriptionId) {
+        return [...s.invoices.values()]
+          .filter((i) => inScope(i, scope) && i.subscriptionId === subscriptionId && payable(i))
+          .sort(byPeriod)
+          .map((i) => withClock(structuredClone(i)) as Invoice);
+      },
+    },
+    vaultEvents: {
+      async markApplied(e) {
+        if (s.vaultEvents.has(e.dedupeKey)) return false;
+        s.vaultEvents.add(e.dedupeKey);
+        return true;
+      },
+      async park(e) {
+        const cur = s.parked.get(e.dedupeKey);
+        s.parked.set(e.dedupeKey, {
+          reason: e.reason,
+          retryAt: e.retryAt,
+          attempts: (cur?.attempts ?? 0) + 1,
+          payload: structuredClone(e.payload),
+          vaultContract: e.vaultContract,
+          onchainId: e.onchainId,
+          resolved: false,
+        });
+      },
+      async dueParked(now, limit) {
+        return [...s.parked.entries()]
+          .filter(([, p]) => !p.resolved && p.retryAt !== null && p.retryAt <= now)
+          .slice(0, limit)
+          .map(([k, p]) => ({ dedupeKey: k, payload: structuredClone(p.payload), attempts: p.attempts }));
+      },
+      async resolveParked(key) {
+        const p = s.parked.get(key);
+        if (p) s.parked.set(key, { ...p, resolved: true });
+      },
+      async parkedFor(vault, onchainId) {
+        return [...s.parked.entries()]
+          .filter(
+            ([, p]) => !p.resolved && p.retryAt !== null && p.vaultContract === vault && p.onchainId === onchainId,
+          )
+          .map(([k, p]) => ({ dedupeKey: k, payload: structuredClone(p.payload), attempts: p.attempts }));
+      },
+    },
+    async openCase(c) {
+      s.cases.push({ mandateId: c.mandateId, invoiceId: c.invoiceId, kind: c.kind, detail: structuredClone(c.detail) });
+    },
     products: {
       ...repo(s.products, "product"),
       list: async (scope, q) =>
@@ -208,7 +358,8 @@ function txOf(s: MemoryState): BillingTx {
             (q.customer === undefined || r.customerId === q.customer) &&
             (q.subscription === undefined || r.subscriptionId === q.subscription) &&
             (q.dueDate?.gte === undefined || (r.dueDate !== null && r.dueDate >= q.dueDate.gte)) &&
-            (q.dueDate?.lte === undefined || (r.dueDate !== null && r.dueDate <= q.dueDate.lte)),
+            (q.dueDate?.lte === undefined || (r.dueDate !== null && r.dueDate <= q.dueDate.lte)) &&
+            (q.collectionMethod === undefined || r.collectionMethod === q.collectionMethod),
         ),
       async bySubscriptionPeriod(scope, subscriptionId, periodStart) {
         const r = [...s.invoices.values()].find(
@@ -406,9 +557,107 @@ export const MERCHANT: MerchantFacts = {
   displayName: "Acme Corp",
   liveEnabled: true,
   liveMissing: null,
-  destinations: [{ id: "sd_default", assetId: "nep141:usdc.near", chain: "near:mainnet", type: "intents_account" }],
+  destinations: [
+    {
+      id: "sd_default",
+      assetId: "nep141:usdc.near",
+      chain: "near:mainnet",
+      type: "intents_account",
+      address: "acme.near",
+    },
+  ],
   defaults: { "*": "sd_default" },
+  vaultFeeBps: 100,
 };
+
+// ---------------------------------------------------------------------------------------------
+// Fake vault (NEAR RPC) and sandbox stand-in
+// ---------------------------------------------------------------------------------------------
+
+export class FakeVault {
+  config: VaultConfigFacts = {
+    allowedTokens: ["usdc.near", "usdt.near"],
+    maxFeeBps: 500,
+    caps: new Map([
+      ["usdc.near", { cap: 10n ** 15n, mandateCap: 10n ** 12n }],
+      ["usdt.near", { cap: 10n ** 15n, mandateCap: 10n ** 12n }],
+    ]),
+  };
+  tvl = 0n;
+  storage = new Map<string, { total: bigint; available: bigint }>();
+  /** `next_collect_at` per onchain id (ns); absent = due now. */
+  next = new Map<number, bigint | null>();
+  blockNs = 0n;
+  enabled = true;
+  rpcDown = false;
+  /** Results `send` returns, in order (default success). */
+  results: ((txHash: string) => CollectTxResult)[] = [];
+  statusResult: ((txHash: string) => CollectTxResult) | null = null;
+  sent: { livemode: boolean; onchainId: number; txHash: string }[] = [];
+  views = new Map<number, { status: string } | null>();
+  private n = 0;
+  private check() {
+    if (this.rpcDown) throw new Error("rpc down");
+  }
+  readonly port: VaultPort = {
+    contract: (livemode) => (livemode ? "v1.vault.nearpay.near" : "vault.sandbox.near"),
+    keeperEnabled: () => this.enabled,
+    config: async () => {
+      this.check();
+      return this.config;
+    },
+    tokenTvl: async (_l, token) => {
+      this.check();
+      const c = this.config.caps.get(token);
+      return c ? { tvl: this.tvl, cap: c.cap } : null;
+    },
+    storageBalanceOf: async (_l, account) => {
+      this.check();
+      return this.storage.get(account) ?? null;
+    },
+    nextCollectAt: async (_l, id) => {
+      this.check();
+      return this.next.has(id) ? (this.next.get(id) ?? null) : this.blockNs;
+    },
+    mandateView: async (_l, id) => this.views.get(id) ?? null,
+    blockTimeNs: async () => {
+      this.check();
+      return this.blockNs;
+    },
+    signCollect: async (livemode, onchainId) => {
+      this.check();
+      const txHash = `tx${++this.n}`;
+      this.sent.push({ livemode, onchainId, txHash });
+      return { txHash, bytes: new Uint8Array([this.n]) };
+    },
+    send: async (_l, signed) => {
+      const r = this.results.shift();
+      return r ? r(signed.txHash) : { kind: "success", txHash: signed.txHash };
+    },
+    status: async (_l, txHash) =>
+      this.statusResult ? this.statusResult(txHash) : { kind: "unknown", txHash, error: "unknown" },
+  };
+}
+
+export class FakeSandbox {
+  calls: { kind: string; body: unknown }[] = [];
+  /** Next outcome (default: accepted with no logs). */
+  outcomes: SimOutcome[] = [];
+  advanced: { onchainId: number; secs: number }[] = [];
+  readonly port: SandboxVaultPort = {
+    ftTransferCall: async (o) => {
+      this.calls.push({ kind: "ft_transfer_call", body: o });
+      return this.outcomes.shift() ?? { txHash: "simtx", failure: null, vaultLogs: [] };
+    },
+    call: async (o) => {
+      this.calls.push({ kind: "call", body: o });
+      return this.outcomes.shift() ?? { txHash: "simtx", failure: null, vaultLogs: [] };
+    },
+    advance: async (onchainId, secs) => {
+      this.advanced.push({ onchainId, secs });
+    },
+  };
+}
 
 export const fakePdf: PdfRenderer = {
   render: (d) => new TextEncoder().encode(`%PDF ${d.invoice.number} ${d.stamp ?? ""}`),
@@ -419,6 +668,8 @@ export interface TestBilling extends Billing {
   readonly pay: FakePayments;
   readonly clock: { ms: number };
   merchantFacts: MerchantFacts;
+  readonly fakeVault: FakeVault;
+  readonly fakeSandbox: FakeSandbox;
   readonly objectsMap: Map<string, Uint8Array>;
   readonly logs: { level: string; msg: string; o: object }[];
 }
@@ -430,6 +681,8 @@ export function testBilling(startMs: number, store?: BillingStore): TestBilling 
   const clock = { ms: startMs };
   const objectsMap = new Map<string, Uint8Array>();
   const logs: TestBilling["logs"] = [];
+  const fakeVault = new FakeVault();
+  const fakeSandbox = new FakeSandbox();
   let ids = 0;
   const b: TestBilling = {
     mem,
@@ -438,11 +691,18 @@ export function testBilling(startMs: number, store?: BillingStore): TestBilling 
     objectsMap,
     logs,
     merchantFacts: MERCHANT,
+    fakeVault,
+    fakeSandbox,
+    vault: fakeVault.port,
+    sandbox: fakeSandbox.port,
     store: store ?? mem,
     payments: pay.port,
     merchant: { context: async () => b.merchantFacts },
     assets: {
-      asset: async (id) => (id === "nep141:usdc.near" ? { assetId: id, symbol: "USDC", decimals: 6 } : undefined),
+      asset: async (id) =>
+        id === "nep141:usdc.near" || id === "nep141:usdt.near"
+          ? { assetId: id, symbol: id === "nep141:usdc.near" ? "USDC" : "USDT", decimals: 6 }
+          : undefined,
     },
     cipher: createEnvelopeCipher(Buffer.alloc(32, 7)),
     objects: {
@@ -463,6 +723,10 @@ export function testBilling(startMs: number, store?: BillingStore): TestBilling 
       pricingCurrencies: new Set(["usd", "eur"]),
       publicSessionsPerClient: 10,
       publicSessionsPerInvoice: 30,
+      vaultUsdTokens: ["usdc.near", "usdt.near"],
+      vaultTokens: ["usdc.near", "usdt.near"],
+      vaultMaxFeeBps: 500,
+      simulatedPayer: "sandbox-payer.near",
     },
     newId: (k: IdKind) => `${k}_${String(++ids).padStart(26, "0")}`,
     randomBytes: (n) => {

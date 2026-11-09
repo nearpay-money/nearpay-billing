@@ -28,6 +28,12 @@ export interface PublicInvoiceData {
   readonly merchantName: string;
   readonly pricingAsset: AssetFacts | null;
   readonly settlement: { readonly assetId: string; readonly chain: string; readonly type: string } | null;
+  /** `PublicInvoice.auto_debit` (Stage 4; filled by `mandates.getHostedInvoice`, null otherwise). */
+  readonly autoDebit?: {
+    readonly available: boolean;
+    readonly mandate: string | null;
+    readonly collecting: boolean;
+  } | null;
 }
 
 function destinationFor(inv: Invoice, m: MerchantFacts): MerchantFacts["destinations"][number] | null {

@@ -10,6 +10,7 @@ export interface Scope {
   readonly livemode: boolean;
 }
 
+/** Spec error codes (0.4.0 includes `auto_debit_unavailable`, `vault_cap_exceeded`). */
 export type BillingErrorCode = ErrorCode;
 
 /**

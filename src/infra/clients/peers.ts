@@ -153,8 +153,11 @@ export function identityMerchant(o: PeerOptions & { baseUrl: string }): Merchant
           liveMissing: ctx.account.live_enabled ? null : "kyb_or_live_destination",
           destinations: ctx.destinations
             .filter((d) => d.status === "active")
-            .map((d) => ({ id: d.id, assetId: d.asset_id, chain: d.chain, type: d.type })),
+            .map((d) => ({ id: d.id, assetId: d.asset_id, chain: d.chain, type: d.type, address: d.address })),
           defaults: { ...ctx.defaults },
+          // vault collections deliver the token itself into the merchant's Intents account: the fee schedule's
+          // `intents_transfer` route class (ADR-0006; LLD §15 d2)
+          vaultFeeBps: ctx.fee_schedule.rules.intents_transfer.total_bps,
         };
       } catch (e) {
         return relay(e);

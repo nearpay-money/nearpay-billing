@@ -16,7 +16,7 @@ import {
 import { MandateNotificationContext, sandboxNearRpc, sandboxVaultCall } from "@nearpay-internal/spec";
 import { domainEvent } from "@nearpay-internal/testing";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { type Merchant, type Stack, startStack, USDC_NEAR } from "../support/stack.js";
+import { type Merchant, type Stack, startStack, USDC_NEAR, uuid } from "../support/stack.js";
 
 let s: Stack;
 let m: Merchant;
@@ -142,6 +142,10 @@ describe("auto-debit end to end", () => {
     const act = await probe.next("evt.billing.mandate.activated", () => true, 15_000);
     const md = MandateSchema.parse(act.data.object);
     expect(md).toMatchObject({ subscription: sub.id, link_status: "linked", status: "active", fee_bps: 30 });
+    // envelope: the mandate's merchant account (the vault event had none) and the payload's mode
+    expect(act.account_id).toBe(uuid(m.account, "acct"));
+    expect(act.livemode).toBe(false);
+    expect(md.livemode).toBe(act.livemode);
 
     // the keeper sends collect through the stand-in's NEAR JSON-RPC (signed, 250 Tgas; outcome not trusted)
     await until(() => s.vault.sentTx.length > 0 || undefined);
@@ -218,7 +222,15 @@ describe("auto-debit end to end", () => {
 
     // the payer cancels on chain → mirrored; the subscription unlinks
     await vaultEvent(record("canceled", { mandate_id: 41, by: "alice.near", refunded: "30000000" }));
-    await probe.next("evt.billing.mandate.canceled", (e) => e.aggregate.id === md.id, 15_000);
+    const canceled = await probe.next("evt.billing.mandate.canceled", (e) => e.aggregate.id === md.id, 15_000);
+    expect(canceled.account_id).toBe(uuid(m.account, "acct"));
+    const cctx = await s.call("GET", `/internal/mandates/${md.id}/notification-context`, {
+      token: await s.serviceToken("notify"),
+    });
+    expect(MandateNotificationContext.parse(cctx.body)).toMatchObject({
+      refunded: "30000000",
+      cancel_transaction: null,
+    });
     await until(async () => {
       const r = await s.call("GET", `/v1/subscriptions/${sub.id}`, { token: tok });
       return r.body.mandate === null || undefined;

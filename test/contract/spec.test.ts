@@ -317,6 +317,23 @@ describe("Stage 4 objects parse with the spec 0.4.0 schemas", () => {
     const m7 = linked as NonNullable<typeof linked>;
     const m8 = [...b.mem.state.mandates.values()].find((m) => m.onchainId === 8) as typeof m7;
 
+    // notify's contract: payer transactions target the context's vault, signed by the payer (or null), exact methods
+    const context = async (id: string) =>
+      MandateNotificationContext.parse(mandateNotificationView(await mandateNotificationContext(b, id)));
+    const payerTx = (ctx: Awaited<ReturnType<typeof context>>, method: "cancel" | "withdraw") => {
+      const tx = method === "cancel" ? ctx.cancel_transaction : ctx.withdraw_transaction;
+      expect(tx, `${ctx.mandate} ${method}`).not.toBeNull();
+      expect(tx?.receiver_id).toBe(ctx.vault_contract);
+      expect([null, ctx.payer]).toContain(tx?.signer_id);
+      expect(tx?.actions.map((a) => a.method_name)).toEqual([method]);
+    };
+    const activatedCtx = await context(m7.id); // mandate.activated
+    expect(activatedCtx).toMatchObject({ vault_contract: VAULT, payer: "alice.near", refunded: null });
+    payerTx(activatedCtx, "cancel");
+    const unlinkedCtx = await context(m8.id); // mandate.unlinked
+    expect(unlinkedCtx).toMatchObject({ link_status: "unlinked", unlinked_reason: "already_linked" });
+    payerTx(unlinkedCtx, "cancel");
+
     // the keeper collects the first invoice; the forwarded `collected` pays it (evidence on the invoice)
     await runDueJobs(b, jobHandlers(b));
     expect(b.fakeVault.sent).toHaveLength(1);
@@ -374,8 +391,12 @@ describe("Stage 4 objects parse with the spec 0.4.0 schemas", () => {
     await runDueJobs(b, jobHandlers(b));
     expect(adv.advancedBy).toBeGreaterThan(0);
     await subs.cancelSubscription(b, c, s.id, false);
+    payerTx(await context(m7.id), "cancel"); // mandate.released: still active on chain, the payer cancels
     await deliver(record("canceled", { mandate_id: 7, by: "alice.near", refunded: "75000000" }));
+    const canceledCtx = await context(m7.id); // mandate.canceled
+    expect(canceledCtx).toMatchObject({ status: "canceled", refunded: "75000000", cancel_transaction: null });
     await deliver(record("exhausted", { mandate_id: 8 }));
+    payerTx(await context(m8.id), "withdraw"); // exhausted with a balance left: the payer withdraws
 
     const render = eventRenderer("https://api.nearpay.test");
     const subjects = new Set(b.mem.state.outbox.map((e) => e.subject));
@@ -391,8 +412,15 @@ describe("Stage 4 objects parse with the spec 0.4.0 schemas", () => {
     ] as const)
       expect(subjects.has(want), want).toBe(true);
     for (const e of b.mem.state.outbox) {
-      const r = SUBJECTS[e.subject as keyof typeof SUBJECTS].object.safeParse(render(e.object));
+      const object = render(e.object);
+      const r = SUBJECTS[e.subject as keyof typeof SUBJECTS].object.safeParse(object);
       expect(r.success, `${e.subject}: ${r.success ? "" : JSON.stringify(r.error.issues[0])}`).toBe(true);
+      // mandate events: envelope account = the mandate's merchant account; payload livemode = envelope mode
+      if (e.object.kind === "mandate") {
+        expect(e.scope).toEqual({ accountId: SCOPE.accountId, livemode: false });
+        expect(e.scope.accountId).toBe(e.object.mandate.accountId);
+        expect((object as { livemode: boolean }).livemode).toBe(e.scope.livemode);
+      }
     }
   });
 });

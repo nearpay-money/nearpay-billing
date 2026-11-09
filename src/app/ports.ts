@@ -460,8 +460,9 @@ export type CollectTxResult =
 
 /** One vault per mode: `livemode` selects the mainnet vault or the sandbox stand-in (INV-8). */
 export interface VaultPort {
-  contract(livemode: boolean): string;
-  /** Whether the keeper can sign for this mode (key configured). */
+  /** The mode's vault account; null when live mode has none configured (`NP_VAULT_CONTRACT` unset: auto-debit off). */
+  contract(livemode: boolean): string | null;
+  /** Whether the keeper can sign for this mode (vault and key configured). */
   keeperEnabled(livemode: boolean): boolean;
   config(livemode: boolean): Promise<VaultConfigFacts>;
   tokenTvl(livemode: boolean, token: string): Promise<{ readonly tvl: bigint; readonly cap: bigint } | null>;

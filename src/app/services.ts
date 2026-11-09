@@ -110,12 +110,16 @@ function build(config: SharedConfig, deps: ServiceDeps, app: string): Built {
   const vault =
     deps.vault ??
     nearVault({
-      live: {
-        rpc: nearRpc({ urls: config.nearRpcUrls, ...f }),
-        contract: config.vaultContract,
-        keeper: config.keeperKey ? parseKeeperKey(config.keeperKey, config.keeperAccount) : null,
-        strictKeyPermission: true,
-      },
+      // no live vault configured → live auto-debit off (never a default: an account we do not control could
+      // receive payers' mandate funding)
+      live: config.vaultContract
+        ? {
+            rpc: nearRpc({ urls: config.nearRpcUrls, ...f }),
+            contract: config.vaultContract,
+            keeper: config.keeperKey ? parseKeeperKey(config.keeperKey, config.keeperAccount) : null,
+            strictKeyPermission: true,
+          }
+        : null,
       test: {
         rpc: nearRpc({
           urls:
@@ -199,9 +203,36 @@ function readiness(b: Built) {
   };
 }
 
-function attach(b: Built, service: Service, deps: ServiceDeps) {
+/**
+ * Boot notice of the live vault: `nearpay_billing_live_vault_configured` (1/0) and a log line — a warning on the
+ * server stage when `NP_VAULT_CONTRACT` is unset (live auto-debit stays off until the vault is deployed and set).
+ */
+export function announceLiveVault(
+  config: Pick<SharedConfig, "env" | "vaultContract">,
+  service: Pick<Service, "log" | "metrics">,
+): boolean {
+  const configured = config.vaultContract !== undefined;
+  service.metrics
+    .gauge(
+      "live_vault_configured",
+      "1 when a live subscription vault is configured (NP_VAULT_CONTRACT); 0 = live auto-debit is off.",
+    )
+    .set(configured ? 1 : 0);
+  if (configured) service.log.info({ vault: config.vaultContract }, "live auto-debit: vault configured");
+  else if (config.env === "local" || config.env === "test")
+    service.log.info({}, "live auto-debit is off: NP_VAULT_CONTRACT unset");
+  else
+    service.log.warn(
+      {},
+      "NP_VAULT_CONTRACT unset: live auto-debit is off until the vault is deployed (mainnet checklist B) and set",
+    );
+  return configured;
+}
+
+function attach(b: Built, service: Service, deps: ServiceDeps, config: SharedConfig) {
   b.setLog(service.log);
   b.setMetrics(service.metrics);
+  announceLiveVault(config, service);
   service.onShutdown(async () => {
     if (!deps.database) await b.database.close();
   });
@@ -221,7 +252,7 @@ export function createApi(config: ApiConfig, deps: ServiceDeps = {}): { service:
     idempotency: idempotencyStore(b.database.db, b.billing.cipher),
     readiness: readiness(b),
   });
-  attach(b, service, deps);
+  attach(b, service, deps, config);
   return { service, billing: b.billing };
 }
 
@@ -236,7 +267,7 @@ export async function createWorker(
 ): Promise<{ service: Service; billing: Billing }> {
   const b = build(config, deps, "worker");
   const service = createService({ name: "billing", config, readiness: readiness(b) });
-  attach(b, service, deps);
+  attach(b, service, deps, config);
   const db = b.database;
 
   const bus = deps.bus ?? (await connectBus({ url: config.natsUrl, name: `billing-worker@${hostname()}` }));

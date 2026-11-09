@@ -2,10 +2,11 @@
  * Configuration (lld/billing.md §8, foundations §13). `*_FILE` variables carry secrets; `secret()` marks the
  * schema object it wraps, so every secret gets a fresh schema (never a shared one). Keys map to
  * `NP_<SNAKE_CASE>` (`payOrigin` ↔ `NP_PAY_ORIGIN`). `NP_ENV` (local|server|test) is required (kit ≥ 0.2.1).
- * Stage 4 adds the vault and the keeper (lld/billing.md v1.7 §8, §15): live mode `NP_VAULT_CONTRACT`,
- * `NP_NEAR_RPC_URLS`, `NP_KEEPER_ACCOUNT`, `NP_KEEPER_KEY_FILE` (secret: a funded NEAR account used only for
- * gas, function-call key for the vault); test mode the sandbox stand-in (`NP_TEST_VAULT_CONTRACT`,
- * `NP_SANDBOX_BASE_URL` → `/sim/near-rpc`, `NP_TEST_KEEPER_ACCOUNT`, optional `NP_TEST_KEEPER_KEY_FILE`).
+ * Stage 4 adds the vault and the keeper (lld/billing.md v1.7 §8, §15): live mode `NP_VAULT_CONTRACT` (optional,
+ * no default: unset = live auto-debit off), `NP_NEAR_RPC_URLS`, `NP_KEEPER_ACCOUNT`, `NP_KEEPER_KEY_FILE` (secret:
+ * a funded NEAR account used only for gas, function-call key for the vault); test mode the sandbox stand-in
+ * (`NP_TEST_VAULT_CONTRACT`, `NP_SANDBOX_BASE_URL` → `/sim/near-rpc`, `NP_TEST_KEEPER_ACCOUNT`, optional
+ * `NP_TEST_KEEPER_KEY_FILE`).
  */
 
 import { baseConfigShape, list, loadConfig, secret, url } from "@nearpay-internal/service";
@@ -50,8 +51,13 @@ const shared = {
   publicSessionsPerClient: bounded(1, 1_000, 10),
   publicSessionsPerInvoice: bounded(1, 10_000, 30),
   // ---- Stage 4: vault and keeper
-  /** Mainnet subscription vault (live mode). */
-  vaultContract: nearAccount.default("v1.vault.nearpay.near"),
+  /**
+   * Mainnet subscription vault (live mode): the owner-controlled account the vault was deployed to (mainnet
+   * checklist A.4). No default — a guessed name could be an account someone else controls, and payers would
+   * fund mandates there. Unset (or empty) → live auto-debit is off: live funding and `auto_debit` are refused
+   * (`auto_debit_unavailable`), the live keeper does not collect, live vault events are parked.
+   */
+  vaultContract: nearAccount.optional(),
   /** NEAR JSON-RPC providers for live mode, tried in order. */
   nearRpcUrls: list(z.string().url()).default(["https://rpc.mainnet.near.org"]),
   /** Live keeper account (gas only). Without a key the live keeper does not collect (alerted). */

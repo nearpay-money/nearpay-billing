@@ -32,7 +32,7 @@ export interface CollectJob {
 }
 
 const SYSTEM = "system:keeper";
-/** Retry while the keeper key is not configured for the mode (alert each time). */
+/** Retry while the keeper key (or the live vault) is not configured for the mode (alert each time). */
 const NO_KEY_RETRY_S = 600;
 
 type Loaded = { readonly m: Mandate; readonly inv: Invoice };
@@ -85,6 +85,17 @@ export async function collectJob(b: Billing, j: CollectJob): Promise<void> {
   const plan = planCollect(l.m, l.inv, now);
   if (plan.kind === "done") return;
   if (plan.kind === "fallback") return fallback(b, j, plan.reason);
+  // never act on a vault other than the mandate's own; live without NP_VAULT_CONTRACT has none (auto-debit off)
+  const vault = b.vault.contract(l.m.livemode);
+  if (vault !== l.m.vaultContract) {
+    b.log.error(
+      { mandate: l.m.id, livemode: l.m.livemode, mandate_vault: l.m.vaultContract, configured_vault: vault },
+      vault === null
+        ? "ALERT no live vault configured (NP_VAULT_CONTRACT): keeper cannot collect"
+        : "ALERT mandate's vault is not the configured vault: keeper cannot collect",
+    );
+    return later(b, l.m, l.inv, now + NO_KEY_RETRY_S, vault === null ? "live vault missing" : "vault mismatch");
+  }
   if (plan.kind === "wait") {
     if (l.m.keeper.pendingTxHash !== null) return recheckPending(b, j, l);
     return later(b, l.m, l.inv, plan.at, plan.reason);

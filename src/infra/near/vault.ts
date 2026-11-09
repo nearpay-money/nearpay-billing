@@ -83,8 +83,24 @@ function maxBig(a: bigint, b: bigint): bigint {
   return b;
 }
 
-export function nearVault(targets: { readonly live: VaultTarget; readonly test: VaultTarget }): VaultPort {
-  const t = (livemode: boolean) => (livemode ? targets.live : targets.test);
+/** Live mode without a configured vault (`NP_VAULT_CONTRACT` unset): every live vault call fails with this. */
+export class NoLiveVaultError extends Error {
+  constructor() {
+    super("no live vault configured (NP_VAULT_CONTRACT unset): live auto-debit is off");
+    this.name = "NoLiveVaultError";
+  }
+}
+
+/**
+ * `live: null` = no live vault configured: `contract(true)` is null, the live keeper is disabled and every live
+ * view, signature or broadcast fails (`NoLiveVaultError`) before touching NEAR RPC. Test mode is unaffected.
+ */
+export function nearVault(targets: { readonly live: VaultTarget | null; readonly test: VaultTarget }): VaultPort {
+  const t = (livemode: boolean): VaultTarget => {
+    if (!livemode) return targets.test;
+    if (!targets.live) throw new NoLiveVaultError();
+    return targets.live;
+  };
   // one signer per process: serialise nonce allocation so parallel collects never reuse a nonce
   const lastNonce = new Map<string, bigint>();
   let lock: Promise<unknown> = Promise.resolve();
@@ -97,8 +113,8 @@ export function nearVault(targets: { readonly live: VaultTarget; readonly test: 
     VAULT_VIEWS[method].parse(await t(livemode).rpc.view(t(livemode).contract, method, args));
 
   return {
-    contract: (livemode) => t(livemode).contract,
-    keeperEnabled: (livemode) => t(livemode).keeper !== null,
+    contract: (livemode) => (livemode ? (targets.live?.contract ?? null) : targets.test.contract),
+    keeperEnabled: (livemode) => (livemode ? (targets.live?.keeper ?? null) : targets.test.keeper) !== null,
     async config(livemode): Promise<VaultConfigFacts> {
       const c = (await view(livemode, "get_config", {})) as {
         allowed_tokens: string[];
@@ -134,6 +150,7 @@ export function nearVault(targets: { readonly live: VaultTarget; readonly test: 
       return (await t(livemode).rpc.block()).timestampNs;
     },
     signCollect(livemode, onchainId): Promise<SignedCollect> {
+      if (livemode && !targets.live) return Promise.reject(new NoLiveVaultError());
       const target = t(livemode);
       const key = target.keeper;
       if (!key) return Promise.reject(new Error(`no keeper key for ${livemode ? "live" : "test"} mode`));
@@ -178,6 +195,7 @@ export function nearVault(targets: { readonly live: VaultTarget; readonly test: 
       }
     },
     async status(livemode, txHash): Promise<CollectTxResult> {
+      if (livemode && !targets.live) return { kind: "unknown", txHash, error: "no live vault configured" };
       const target = t(livemode);
       if (!target.keeper) return { kind: "unknown", txHash, error: "no keeper key" };
       const o = await target.rpc.tx(txHash, target.keeper.accountId);

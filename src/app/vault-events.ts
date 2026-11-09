@@ -98,11 +98,14 @@ const onchainIdOf = (r: VaultEventRecord): number => r.event.data[0].mandate_id;
 export async function onVaultEvent(b: Billing, i: VaultEventInput, attempt = 1): Promise<VaultEventResult> {
   const key = dedupeKeyOf(i.record);
   try {
-    if (i.record.vault_contract !== b.vault.contract(i.livemode))
+    const vault = b.vault.contract(i.livemode);
+    if (i.record.vault_contract !== vault)
       throw new Park(
         "wrong_vault",
         false,
-        `${i.record.vault_contract} is not the ${i.livemode ? "live" : "test"} vault`,
+        vault === null
+          ? `${i.record.vault_contract}: no live vault is configured (NP_VAULT_CONTRACT)`
+          : `${i.record.vault_contract} is not the ${i.livemode ? "live" : "test"} vault`,
       );
     const r = i.record.event.event === "mandate_created" ? await onCreated(b, i) : await onMandateEvent(b, i);
     if (attempt > 1 || r === "applied")

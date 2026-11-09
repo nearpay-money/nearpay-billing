@@ -66,6 +66,21 @@ export async function latestInvoicePayable(tx: BillingTx, sub: Subscription): Pr
   return inv !== undefined && isPayable(inv);
 }
 
+/** The `auto_debit_unavailable` reason while live mode has no vault configured (`NP_VAULT_CONTRACT` unset). */
+export const NO_LIVE_VAULT = "live auto-debit is not available yet";
+
+/**
+ * The mode's vault account. Live mode without a configured vault refuses with `auto_debit_unavailable` before any
+ * RPC or transaction is built: nothing may point a payer's funding at a guessed account. Test mode always has the
+ * sandbox stand-in.
+ */
+export function vaultContractOf(b: Billing, livemode: boolean, subscription: string, param?: string): string {
+  const contract = b.vault.contract(livemode);
+  if (contract === null)
+    throw new DomainError("auto_debit_unavailable", { subscription, reason: NO_LIVE_VAULT }, param);
+  return contract;
+}
+
 /** NEAR RPC failures answer `rail_unavailable` (§14 d4); rule refusals pass through. */
 export async function rpc<T>(f: () => Promise<T>): Promise<T> {
   try {
@@ -174,6 +189,8 @@ async function computeFunding(
   subscriptionId: string,
   input: FundingInput,
 ): Promise<FundingData> {
+  // live without a vault: refused up front (no read, no RPC, no transaction)
+  const vaultContract = vaultContractOf(b, scope.livemode, subscriptionId);
   const read = await b.store.transaction(async (tx) => {
     const sub = await tx.subscriptions.get(scope, subscriptionId);
     if (!sub) throw missing("subscription", subscriptionId, "subscription");
@@ -215,7 +232,7 @@ async function computeFunding(
   const storage = payer ? await rpc(() => b.vault.storageBalanceOf(sub.livemode, payer)) : undefined;
   const funding = fundingInstructions({
     terms,
-    vaultContract: b.vault.contract(sub.livemode),
+    vaultContract,
     periods: input.periods,
     caps: { mandateCap: cap.mandateCap, tvlCap: tvl.cap, tvl: tvl.tvl },
     payer,
@@ -338,7 +355,7 @@ export async function publicAutoDebit(
     const collecting = await tx.mandates.collectingFor(sub, sub.id);
     const newest = await tx.mandates.newestFor(sub, sub.id);
     return {
-      available: !collecting && sub.status !== "canceled" && isPayable(inv),
+      available: b.vault.contract(sub.livemode) !== null && !collecting && sub.status !== "canceled" && isPayable(inv),
       mandate: newest?.id ?? null,
       collecting: collecting !== undefined && inv.collectionMethod === "auto_debit" && inv.mandateId === collecting.id,
     };
@@ -442,8 +459,16 @@ export async function simulateMandatePayerAction(
 // Subscription hooks
 // ---------------------------------------------------------------------------------------------
 
-/** `auto_debit` needs vault-compatible pricing, checked up front without RPC (§14 d2). */
-export function assertAutoDebitPricing(b: Billing, sub: Pick<Subscription, "currency" | "assetId">, id: string): void {
+/**
+ * `auto_debit` needs a vault for the mode (live: `NP_VAULT_CONTRACT`) and vault-compatible pricing, checked up front
+ * without RPC (§14 d2).
+ */
+export function assertAutoDebitPricing(
+  b: Billing,
+  sub: Pick<Subscription, "currency" | "assetId" | "livemode">,
+  id: string,
+): void {
+  vaultContractOf(b, sub.livemode, id, "collection_method");
   const problem = vaultPricingProblem(sub, b.settings.vaultUsdTokens, b.settings.vaultTokens);
   if (problem)
     throw new DomainError("auto_debit_unavailable", { subscription: id, reason: problem }, "collection_method");

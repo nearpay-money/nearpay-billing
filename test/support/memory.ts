@@ -589,6 +589,8 @@ export class FakeVault {
   next = new Map<number, bigint | null>();
   blockNs = 0n;
   enabled = true;
+  /** The live vault account; null = `NP_VAULT_CONTRACT` unset (live auto-debit off). */
+  liveContract: string | null = "v1.vault.example.near";
   rpcDown = false;
   /** Results `send` returns, in order (default success). */
   results: ((txHash: string) => CollectTxResult)[] = [];
@@ -600,8 +602,8 @@ export class FakeVault {
     if (this.rpcDown) throw new Error("rpc down");
   }
   readonly port: VaultPort = {
-    contract: (livemode) => (livemode ? "v1.vault.nearpay.near" : "vault.sandbox.near"),
-    keeperEnabled: () => this.enabled,
+    contract: (livemode) => (livemode ? this.liveContract : "vault.sandbox.near"),
+    keeperEnabled: (livemode) => this.enabled && (!livemode || this.liveContract !== null),
     config: async () => {
       this.check();
       return this.config;

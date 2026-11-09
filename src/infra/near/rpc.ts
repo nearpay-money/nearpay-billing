@@ -5,6 +5,7 @@
  * the sandbox stand-in `POST /sim/near-rpc` (identical shapes; billing's service token, scope `sandbox.use`).
  * Responses are validated with the spec schemas; anything unexpected is an error, never a guess.
  */
+import { HEADERS } from "@nearpay/spec";
 import {
   NearAccessKeyResult,
   NearBlockResult,
@@ -29,7 +30,7 @@ export class NearRpcError extends Error {
 export interface NearRpcOptions {
   readonly urls: readonly string[];
   readonly timeoutMs?: number | undefined;
-  /** Bearer token for the sandbox stand-in (billing's service token). */
+  /** Billing's service token for the sandbox stand-in (sent as `X-NearPay-Token`). */
   readonly bearer?: (() => Promise<string>) | undefined;
   readonly fetch?: typeof fetch | undefined;
 }
@@ -49,7 +50,8 @@ export function nearRpc(o: NearRpcOptions) {
       let res: Response;
       try {
         const headers: Record<string, string> = { "content-type": "application/json" };
-        if (o.bearer) headers.authorization = `Bearer ${await o.bearer()}`;
+        // internal service token (spec `HEADERS.token`); `Authorization` is for public API keys only
+        if (o.bearer) headers[HEADERS.token] = await o.bearer();
         res = await f(url, {
           method: "POST",
           headers,

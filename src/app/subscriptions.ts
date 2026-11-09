@@ -357,7 +357,7 @@ export async function advanceSubscriptionClock(
     return { subscription: advanced, target, clockTime: at, advancedBy: delta };
   });
   // the linked mandate's stand-in clock moves with it, so renewals and vault periods stay aligned (§14 d12)
-  await advanceMandateClock(b, out.subscription, out.advancedBy);
+  await advanceMandateClock(b, out.subscription, out.advancedBy, target);
   return out;
 }
 

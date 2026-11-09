@@ -529,6 +529,9 @@ describe("subscription hooks", () => {
     await deliver(record(collected()));
     const a = await subs.advanceSubscriptionClock(b, c, s.id, "renewal_upcoming");
     expect(b.fakeSandbox.advanced).toEqual([{ onchainId: 7, secs: a.advancedBy }]);
+    // a renewal also moves it up to next_collect_at (calendar billing months vs average vault months)
+    const r = await subs.advanceSubscriptionClock(b, c, s.id, "renewal");
+    expect(b.fakeSandbox.advanced.slice(1)).toEqual([{ onchainId: 7, secs: r.advancedBy }, { onchainId: 7 }]);
   });
 });
 

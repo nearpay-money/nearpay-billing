@@ -506,7 +506,8 @@ export interface SandboxVaultPort {
     readonly gas?: string | undefined;
     readonly deposit?: string | undefined;
   }): Promise<SimOutcome>;
-  advance(onchainId: number, secs: number): Promise<void>;
+  /** `secs` omitted: up to the mandate's `next_collect_at` (no-op when already due; sandbox §3.1). */
+  advance(onchainId: number, secs?: number): Promise<void>;
 }
 
 export interface ObjectStore {

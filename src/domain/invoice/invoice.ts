@@ -4,7 +4,7 @@
  * `void` are final; drafts may be deleted. There is no "paid out of band": `paid` only follows a succeeded
  * payment intent of payments (INV-2, `./payment.ts`). Pure.
  */
-import { DEFAULT_REMINDER_DAYS } from "@nearpay/spec";
+import { DEFAULT_REMINDER_DAYS } from "@nearpay-money/spec";
 import { DAY, DomainError, type Metadata, mergeMetadata, type Pricing, type Scope, stateConflict } from "../shared.js";
 import { type InvoiceLine, type Period, type Totals, totalsOf } from "./lines.js";
 

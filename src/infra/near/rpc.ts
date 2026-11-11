@@ -5,7 +5,7 @@
  * the sandbox stand-in `POST /sim/near-rpc` (identical shapes; billing's service token, scope `sandbox.use`).
  * Responses are validated with the spec schemas; anything unexpected is an error, never a guess.
  */
-import { HEADERS } from "@nearpay/spec";
+
 import {
   NearAccessKeyResult,
   NearBlockResult,
@@ -13,6 +13,7 @@ import {
   NearFinalExecutionOutcome,
   type NearRpcRequest,
 } from "@nearpay-internal/spec";
+import { HEADERS } from "@nearpay-money/spec";
 
 export class NearRpcError extends Error {
   constructor(

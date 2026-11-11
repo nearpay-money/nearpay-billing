@@ -14,7 +14,7 @@
  *   `withdrawn` subtracts its amount.
  * - `canceled` and `exhausted` are final.
  */
-import { vaultSplit } from "@nearpay/spec";
+import { vaultSplit } from "@nearpay-money/spec";
 import type { Scope } from "../shared.js";
 
 export type MandateStatus = "active" | "insufficient" | "exhausted" | "canceled";

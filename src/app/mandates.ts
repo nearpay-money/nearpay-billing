@@ -6,7 +6,7 @@
  * invoices). Mandate rows are created only from forwarded vault events (`./vault-events.ts`).
  */
 
-import { EVENT_JSON_PREFIX, ONE_YOCTO, parseVaultEventLog, VAULT_GAS, vaultErrorCodeOf } from "@nearpay/spec";
+import { EVENT_JSON_PREFIX, ONE_YOCTO, parseVaultEventLog, VAULT_GAS, vaultErrorCodeOf } from "@nearpay-money/spec";
 import { type Invoice, isPayable } from "../domain/invoice/invoice.js";
 import { priceLines } from "../domain/invoice/lines.js";
 import { fallbackToSendInvoice } from "../domain/mandate/collection.js";

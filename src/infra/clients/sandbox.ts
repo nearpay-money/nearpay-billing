@@ -5,7 +5,6 @@
  * Test mode only by construction: nothing here is reachable from live-mode code paths.
  */
 
-import { SMART_CONTRACT_PANICKED_PREFIX } from "@nearpay/spec";
 import { httpClient } from "@nearpay-internal/http";
 import {
   type NearFinalExecutionOutcome,
@@ -13,6 +12,7 @@ import {
   sandboxVaultCall,
   sandboxVaultFtTransferCall,
 } from "@nearpay-internal/spec";
+import { SMART_CONTRACT_PANICKED_PREFIX } from "@nearpay-money/spec";
 import type { SandboxVaultPort, SimOutcome } from "../../app/ports.js";
 import type { PeerOptions } from "./peers.js";
 

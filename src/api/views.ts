@@ -1,9 +1,18 @@
 /**
- * Domain → spec objects (`@nearpay/spec` 0.3.0 `billing-catalog.ts`, `invoices.ts`, `subscriptions.ts`;
+ * Domain → spec objects (`@nearpay-money/spec` 0.3.0 `billing-catalog.ts`, `invoices.ts`, `subscriptions.ts`;
  * internal `billing.ts`; events). Amounts: fiat as JSON integers (minor units), asset as base-unit
  * strings. The hosted invoice URL (it embeds the invoice secret) appears only on merchant reads and in the
  * notification context — never in events.
  */
+
+import { encodeUuid } from "@nearpay-internal/ids";
+import { fiatToJson, toBaseUnits } from "@nearpay-internal/money";
+import type {
+  InvoiceNotificationContext,
+  InvoiceReminderEvent,
+  MandateNotificationContext,
+  SubscriptionNotificationContext,
+} from "@nearpay-internal/spec";
 import type {
   Invoice as InvoiceObj,
   InvoicePaymentSession,
@@ -20,15 +29,7 @@ import type {
   Subscription as SubscriptionObj,
   TaxRate as TaxRateObj,
   z,
-} from "@nearpay/spec";
-import { encodeUuid } from "@nearpay-internal/ids";
-import { fiatToJson, toBaseUnits } from "@nearpay-internal/money";
-import type {
-  InvoiceNotificationContext,
-  InvoiceReminderEvent,
-  MandateNotificationContext,
-  SubscriptionNotificationContext,
-} from "@nearpay-internal/spec";
+} from "@nearpay-money/spec";
 import type { InvoicePaymentSessionData, PublicInvoiceData } from "../app/hosted.js";
 import type { FundingData, PublicMandateData, SimulationData } from "../app/mandates.js";
 import type {

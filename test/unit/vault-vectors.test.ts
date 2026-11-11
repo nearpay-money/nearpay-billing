@@ -3,6 +3,7 @@
  * strings; Phase A reads the copy in `test/fixtures/vault.json`, Phase B the published package file).
  */
 import { readFileSync } from "node:fs";
+import { VAULT_KEEPER_ON_TX_FAILURE } from "@nearpay-internal/spec";
 import {
   formatVaultEventLog,
   parseVaultEventLog,
@@ -10,8 +11,7 @@ import {
   vaultErrorCodeOf,
   vaultPeriodSecs,
   vaultSplit,
-} from "@nearpay/spec";
-import { VAULT_KEEPER_ON_TX_FAILURE } from "@nearpay-internal/spec";
+} from "@nearpay-money/spec";
 import { describe, expect, it } from "vitest";
 import { createdData } from "../../src/app/vault-events.js";
 import { createMandateMsg, topUpMsg } from "../../src/domain/mandate/funding.js";

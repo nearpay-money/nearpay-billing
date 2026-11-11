@@ -3,7 +3,7 @@
  * and rate, totals consistent, per-rate sums equal the rounded line taxes, ppm ↔ percentage exact.
  */
 
-import { divRoundHalfUp } from "@nearpay/spec";
+import { divRoundHalfUp } from "@nearpay-money/spec";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { type LineDraft, priceLines } from "../../src/domain/invoice/lines.js";

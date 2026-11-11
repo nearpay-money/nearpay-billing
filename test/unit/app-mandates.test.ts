@@ -5,7 +5,7 @@
  * amount lock, test helpers and the notification context.
  */
 
-import type { VaultEvent } from "@nearpay/spec";
+import type { VaultEvent } from "@nearpay-money/spec";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as catalog from "../../src/app/catalog.js";
 import type { Ctx } from "../../src/app/commit.js";

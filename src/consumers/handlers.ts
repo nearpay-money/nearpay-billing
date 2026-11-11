@@ -13,12 +13,12 @@
  * | evt.rails.vault.event | mandate mirror, linkage, collections (`vaultEventHandler`; parks instead of throwing) |
  */
 
-import { CheckoutSession, PaymentIntent } from "@nearpay/spec";
 import type { EventHandler } from "@nearpay-internal/bus";
 import type { Envelope } from "@nearpay-internal/db";
 import { deadLetterSink, type Kysely } from "@nearpay-internal/db";
 import type { Subject } from "@nearpay-internal/spec";
 import { VaultEventRecord as VaultEventRecordSchema } from "@nearpay-internal/spec";
+import { CheckoutSession, PaymentIntent } from "@nearpay-money/spec";
 import { onCheckoutSessionExpired, onPaymentIntentFailed, onPaymentIntentSucceeded } from "../app/payment-events.js";
 import type { Billing } from "../app/ports.js";
 import { onVaultEvent, type VaultEventRecord } from "../app/vault-events.js";

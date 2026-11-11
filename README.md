@@ -87,15 +87,15 @@ nearpay-billing/
 ## Status
 
 Stage 3 (step 3.2): products, prices, tax rates, invoices (hosted page, PDF), `send_invoice` subscriptions and
-dunning are implemented against `@nearpay/spec` 0.3.0 (kit 0.2.1), test clock on 0.3.1.
+dunning are implemented against `@nearpay-money/spec` 0.3.0 (kit 0.2.1), test clock on 0.3.1.
 
-Stage 4 (step 4.2, auto-debit) on `@nearpay/spec` 0.4.0 (kit 0.3.1): mandates mirrored from `evt.rails.vault.event`
+Stage 4 (step 4.2, auto-debit) on `@nearpay-money/spec` 0.4.0 (kit 0.3.1): mandates mirrored from `evt.rails.vault.event`
 (strict linkage, parking + retry), `prepare` / `prepare_cancel` / list / get, the hosted invoice's auto-debit setup and
 payer view, test helpers on the sandbox stand-in, the keeper (`mandate.collect`, §7.1 outcomes), `auto_debit`
 invoices and subscriptions, release and amount lock, mandate events and notification context.
 
 ## Built with
 
-Libraries (hackathon rule Q-005): `@nearpay/spec`, `@nearpay-internal/*` (kit), `kysely`, `zod`; tests:
+Libraries (hackathon rule Q-005): `@nearpay-money/spec`, `@nearpay-internal/*` (kit), `kysely`, `zod`; tests:
 `vitest`, `fast-check`, `testcontainers`; tooling: `typescript`, `@biomejs/biome`. Code and documentation are
 written with AI assistance (Claude) under human direction and review.

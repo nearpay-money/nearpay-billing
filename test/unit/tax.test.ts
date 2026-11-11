@@ -1,4 +1,4 @@
-import vectors from "@nearpay/spec/test-vectors/billing-tax.json" with { type: "json" };
+import vectors from "@nearpay-money/spec/test-vectors/billing-tax.json" with { type: "json" };
 import { describe, expect, it } from "vitest";
 import { priceLines } from "../../src/domain/invoice/lines.js";
 import { DomainError } from "../../src/domain/shared.js";

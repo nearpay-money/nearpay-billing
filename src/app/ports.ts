@@ -3,9 +3,9 @@
  * Domain objects cross these ports; contract (spec) shapes appear only in the adapters and `src/api`.
  */
 
-import type { VaultErrorCode } from "@nearpay/spec";
 import type { EnvelopeCipher } from "@nearpay-internal/db";
 import type { Subject } from "@nearpay-internal/spec";
+import type { VaultErrorCode } from "@nearpay-money/spec";
 import type { Reminder } from "../domain/dunning/dunning.js";
 import type { Invoice } from "../domain/invoice/invoice.js";
 import type { Collection, Mandate } from "../domain/mandate/mandate.js";

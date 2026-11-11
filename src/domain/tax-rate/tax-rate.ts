@@ -3,7 +3,7 @@
  * held as `rate_ppm` (percentage × 10 000); `percentage` and `inclusive` are immutable. Line taxes use the
  * spec's normative `computeLineTax` (round half-up per line and rate). Pure.
  */
-import { TaxPercentage, type TaxRateInput, taxPercentageToPpm } from "@nearpay/spec";
+import { TaxPercentage, type TaxRateInput, taxPercentageToPpm } from "@nearpay-money/spec";
 import { DomainError, distinct, type Metadata, mergeMetadata, missing, type Scope } from "../shared.js";
 
 export const MAX_TAX_RATES_PER_LINE = 5;

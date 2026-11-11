@@ -7,7 +7,7 @@
  * - an invoice is `paid` only with evidence (payment intent or vault collection).
  */
 
-import { vaultSplit } from "@nearpay/spec";
+import { vaultSplit } from "@nearpay-money/spec";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {

@@ -4,6 +4,9 @@
  * keeper's `collect` through the stand-in's NEAR JSON-RPC, the invoice paid only by the forwarded
  * `collected` (INV-2), merchant cancel, the payer view, notification context, test helpers, amount lock.
  */
+
+import { MandateNotificationContext, sandboxNearRpc, sandboxVaultCall } from "@nearpay-internal/spec";
+import { domainEvent } from "@nearpay-internal/testing";
 import {
   Invoice as InvoiceSchema,
   MandateCancelInstructions,
@@ -12,9 +15,7 @@ import {
   MandateSimulation,
   PublicInvoice,
   PublicMandate,
-} from "@nearpay/spec";
-import { MandateNotificationContext, sandboxNearRpc, sandboxVaultCall } from "@nearpay-internal/spec";
-import { domainEvent } from "@nearpay-internal/testing";
+} from "@nearpay-money/spec";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type Merchant, type Stack, startStack, USDC_NEAR, uuid } from "../support/stack.js";
 

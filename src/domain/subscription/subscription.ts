@@ -10,7 +10,7 @@
  * "now": periods that ended while nothing was invoiced are skipped, never billed in arrears (LLD v1.3 §11 d9).
  * Pure.
  */
-import { DEFAULT_REMINDER_DAYS, periodBoundary } from "@nearpay/spec";
+import { DEFAULT_REMINDER_DAYS, periodBoundary } from "@nearpay-money/spec";
 import { checkReminderDays } from "../invoice/invoice.js";
 import type { LineDraft, Period } from "../invoice/lines.js";
 import {

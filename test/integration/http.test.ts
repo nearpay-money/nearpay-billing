@@ -2,9 +2,10 @@
  * The service over HTTP with its worker (Testcontainers Postgres + NATS, spec-mocked peers): every route,
  * the consumed payments subjects, outbox → bus, auth/roles/scope, idempotency, PDF and hosted routes.
  */
-import { PublicInvoice, Subscription as SubscriptionSchema } from "@nearpay/spec";
+
 import { InvoiceEvent, InvoiceNotificationContext, SubscriptionNotificationContext } from "@nearpay-internal/spec";
 import { checkoutSession, domainEvent, paymentIntent } from "@nearpay-internal/testing";
+import { PublicInvoice, Subscription as SubscriptionSchema } from "@nearpay-money/spec";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type Merchant, type Stack, startStack, uuid } from "../support/stack.js";
 

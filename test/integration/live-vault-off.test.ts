@@ -3,7 +3,7 @@
  * the service starts, `nearpay_billing_live_vault_configured` is 0, live `auto_debit` subscriptions and live mandate
  * funding are refused with the spec's `auto_debit_unavailable` (422), and test mode keeps the sandbox stand-in.
  */
-import { MandateFundingInstructions } from "@nearpay/spec";
+import { MandateFundingInstructions } from "@nearpay-money/spec";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type Merchant, type Stack, startStack } from "../support/stack.js";
 

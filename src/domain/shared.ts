@@ -2,7 +2,7 @@
  * Shared domain vocabulary (pure): scope, pricing, errors, time. Times in the domain are unix seconds
  * (integers, UTC) like the public API; amounts are bigint units of the row's currency (INV-5).
  */
-import type { ErrorCode } from "@nearpay/spec";
+import type { ErrorCode } from "@nearpay-money/spec";
 
 /** Every read and write is scoped by account and mode (INV-8). `accountId` is the account uuid. */
 export interface Scope {

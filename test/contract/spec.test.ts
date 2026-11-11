@@ -5,6 +5,16 @@
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { unhandledSubjects } from "@nearpay-internal/bus";
+import { unimplementedRoutes } from "@nearpay-internal/service";
+import {
+  INTERNAL_ROUTES,
+  InvoiceNotificationContext,
+  MandateNotificationContext,
+  SUBJECTS,
+  type Subject,
+  SubscriptionNotificationContext,
+} from "@nearpay-internal/spec";
 import {
   Invoice,
   InvoicePaymentSession,
@@ -20,17 +30,7 @@ import {
   Subscription,
   SubscriptionClockAdvance,
   TaxRate,
-} from "@nearpay/spec";
-import { unhandledSubjects } from "@nearpay-internal/bus";
-import { unimplementedRoutes } from "@nearpay-internal/service";
-import {
-  INTERNAL_ROUTES,
-  InvoiceNotificationContext,
-  MandateNotificationContext,
-  SUBJECTS,
-  type Subject,
-  SubscriptionNotificationContext,
-} from "@nearpay-internal/spec";
+} from "@nearpay-money/spec";
 import { describe, expect, it } from "vitest";
 import { billingRoutes } from "../../src/api/routes.js";
 import {

@@ -9,7 +9,7 @@
  * is paid by auto-debit only from a `collected` event (INV-2), with `Invoice.mandate_collection` as evidence.
  */
 
-import type { VaultEvent } from "@nearpay/spec";
+import type { VaultEvent } from "@nearpay-money/spec";
 import { type Invoice, markPaidByCollection, newDraft, voidAfterShortCollection } from "../domain/invoice/invoice.js";
 import { classifyCollection, evidenceOf, switchToAutoDebit } from "../domain/mandate/collection.js";
 import { afterCollectFailed } from "../domain/mandate/keeper.js";

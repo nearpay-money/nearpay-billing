@@ -6,6 +6,13 @@
  */
 
 import { isIP } from "node:net";
+import { toUuid } from "@nearpay-internal/ids";
+import { ApiError, implement, type RequestContext, type RouteBinding, respond } from "@nearpay-internal/service";
+import {
+  getInvoiceNotificationContext,
+  getMandateNotificationContext,
+  getSubscriptionNotificationContext,
+} from "@nearpay-internal/spec";
 import {
   advanceSubscriptionClock,
   cancelSubscription,
@@ -46,14 +53,7 @@ import {
   updateSubscription,
   updateTaxRate,
   voidInvoice,
-} from "@nearpay/spec";
-import { toUuid } from "@nearpay-internal/ids";
-import { ApiError, implement, type RequestContext, type RouteBinding, respond } from "@nearpay-internal/service";
-import {
-  getInvoiceNotificationContext,
-  getMandateNotificationContext,
-  getSubscriptionNotificationContext,
-} from "@nearpay-internal/spec";
+} from "@nearpay-money/spec";
 import * as catalog from "../app/catalog.js";
 import type { Ctx } from "../app/commit.js";
 import * as hosted from "../app/hosted.js";

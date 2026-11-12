@@ -1,6 +1,6 @@
 # AGENTS.md — nearpay-billing
 
-You are working in **nearpay-billing**, one of 27 NearPay repositories (`nearpay-brain/architecture/repositories.md`).
+You are working in **nearpay-billing**, one of 26 NearPay repositories (`nearpay-brain/architecture/repositories.md`).
 Scope: Products, prices, manual tax rates, invoices, subscriptions, dunning, and the vault keeper for auto-debit mandates. A client of payments.
 
 ## Before changing anything

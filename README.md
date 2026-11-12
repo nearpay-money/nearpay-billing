@@ -1,6 +1,11 @@
 # nearpay-billing
 
-> Products, prices, manual tax rates, invoices, subscriptions, dunning, and the vault keeper for auto-debit mandates. A client of payments.
+Products, prices, manual tax rates, invoices, subscriptions, dunning, and the keeper that collects auto-debit mandates from the subscription vault. Billing never moves money itself: every invoice is paid through a payments checkout session or collected by the vault contract.
+
+Part of [NearPay](https://github.com/nearpay-money/nearpay) — start there for the live demo, the architecture diagram and the full "do X, see Y" walkthrough.
+
+- **Where it sits:** the gateway routes `/v1/products`, `/v1/prices`, `/v1/tax_rates`, `/v1/invoices`, `/v1/subscriptions`, `/v1/mandates` and the hosted-invoice payer routes here. It calls payments (invoice sessions, customers), identity (settlement context), rails (asset display data), NEAR RPC (keeper) and, in test mode, sandbox; it consumes payments and rails events and emits its own for webhooks and notify.
+- **Status:** NearPay runs on NEAR mainnet as a closed beta (https://nearpay.money); invoices and `send_invoice` subscriptions are part of that deployment. Auto-debit is built and tested, but the vault contract is not deployed on mainnet yet (planned account `v1.nearpay-money.near`), so live auto-debit is off (`NP_VAULT_CONTRACT` has no default; while it is unset, live `auto_debit` answers `auto_debit_unavailable`); test mode uses the sandbox's simulated vault.
 
 |                                       |                                                                                                                                                |
 | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -13,20 +18,31 @@
 
 ## Documentation
 
-This repo stays surgical: design docs live in [`nearpay-brain`](../nearpay-brain/README.md), not here.
+Design docs live in [`nearpay-brain`](https://github.com/nearpay-money/nearpay-brain), not here.
 
-- `nearpay-brain/lld/billing.md` — **low-level design (dev-ready; implement from this)**
-- `nearpay-brain/lld/audits/billing.md` — audit findings already folded into the LLD
-- `nearpay-brain/roadmap/development-plan.md` — stage and step this repo is built in
-- `nearpay-brain/architecture/hld.md` — system design
-- `nearpay-brain/architecture/repositories.md` — repo topology and dependency rules
-- `nearpay-brain/decisions/ADR-0008-subscriptions.md`
-- `nearpay-brain/architecture/flows.md#5-invoice-and-send_invoice-subscription-renewal`
+- [`lld/billing.md`](https://github.com/nearpay-money/nearpay-brain/blob/main/lld/billing.md) — low-level design this repo is implemented from
+- [`lld/audits/billing.md`](https://github.com/nearpay-money/nearpay-brain/blob/main/lld/audits/billing.md) — audit findings already folded into the LLD
+- [`roadmap/development-plan.md`](https://github.com/nearpay-money/nearpay-brain/blob/main/roadmap/development-plan.md) — stage and step this repo is built in
+- [`architecture/hld.md`](https://github.com/nearpay-money/nearpay-brain/blob/main/architecture/hld.md) — system design
+- [`architecture/repositories.md`](https://github.com/nearpay-money/nearpay-brain/blob/main/architecture/repositories.md) — repo topology and dependency rules
+- [`decisions/ADR-0008-subscriptions.md`](https://github.com/nearpay-money/nearpay-brain/blob/main/decisions/ADR-0008-subscriptions.md)
+- [`architecture/flows.md#5-invoice-and-send_invoice-subscription-renewal`](https://github.com/nearpay-money/nearpay-brain/blob/main/architecture/flows.md#5-invoice-and-send_invoice-subscription-renewal)
+
+## Verify this repo
+
+Needs Node 22 (`.nvmrc`) and pnpm 9. `.npmrc` points the `@nearpay-money` and `@nearpay-internal` scopes at a local package registry, so start that first.
+
+1. Start the local registry (no Docker, Node 22 only):
+   `git clone https://github.com/nearpay-money/nearpay-deploy ../nearpay-deploy && ../nearpay-deploy/scripts/registry.sh start`
+   → `curl http://127.0.0.1:4873/-/ping` answers `{}`.
+2. `pnpm install --frozen-lockfile` → ends with `Done in …`, no registry errors.
+3. `pnpm test` (unit and property tests: tax arithmetic, invoice and subscription rules, dunning, mandate terms and keeper outcomes; no Docker) → `Test Files  17 passed (17)`, `Tests  188 passed (188)`.
+4. `pnpm verify` (the full gate: typecheck, lint, unit tests with the coverage gate of ≥ 90 % branches on `src/domain`, integration tests, build) → exits 0. The integration step starts Postgres, NATS and Valkey with Testcontainers, so it needs a running Docker daemon; steps 1–3 do not.
 
 ## Run
 
 ```sh
-pnpm install                     # @nearpay* from the local registry (.npmrc, port 4873)
+pnpm install --frozen-lockfile   # NearPay packages from the local registry (.npmrc, port 4873)
 pnpm typecheck && pnpm lint && pnpm test   # unit + property tests (no Docker)
 pnpm test:integration            # Testcontainers: Postgres, NATS, Valkey (needs Docker)
 pnpm verify                      # everything CI runs, incl. coverage gate and build
@@ -94,8 +110,13 @@ Stage 4 (step 4.2, auto-debit) on `@nearpay-money/spec` 0.4.0 (kit 0.3.1): manda
 payer view, test helpers on the sandbox stand-in, the keeper (`mandate.collect`, §7.1 outcomes), `auto_debit`
 invoices and subscriptions, release and amount lock, mandate events and notification context.
 
+Current pins (`package.json`): `@nearpay-money/spec` 0.5.0, kit packages 0.6.0. Live auto-debit stays off until the
+vault is deployed (see the status line at the top).
+
 ## Built with
 
-Libraries (hackathon rule Q-005): `@nearpay-money/spec`, `@nearpay-internal/*` (kit), `kysely`, `zod`; tests:
-`vitest`, `fast-check`, `testcontainers`; tooling: `typescript`, `@biomejs/biome`. Code and documentation are
-written with AI assistance (Claude) under human direction and review.
+- Runtime: TypeScript on Node 22; `@nearpay-money/spec`, the `@nearpay-internal/*` kit (Fastify, Kysely + pg, NATS underneath), `kysely`, `zod`, `@near-js/transactions` and `@near-js/crypto` (keeper transactions), `@noble/curves`, `@noble/hashes`, `bs58`.
+- Tests and tooling: `vitest`, `fast-check`, `testcontainers`, `typescript`, `@biomejs/biome`.
+- Licence: Apache-2.0 (`LICENSE`).
+
+Code and documentation are written with AI assistance (Claude) under human direction and review. Built for the NEAR Hackathon (Nov 2026).
